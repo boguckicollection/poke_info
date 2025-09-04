@@ -99,10 +99,19 @@ def add_common_elements(img, row_data, page_num, total_pages):
         banner.thumbnail((300, 80), Image.Resampling.LANCZOS)
         img.paste(banner, (WIDTH - PADDING - banner.width, HEIGHT - FOOTER_HEIGHT + 40), banner)
 
-    # Dodaj stałe logo PTCG.svg (trzeba przekonwertować SVG -> PNG wcześniej lub użyć odpowiedniego pliku PNG)
-    logo_path = "PTCG.png"  # zakładamy, że masz plik PNG obok skryptu
-    if os.path.exists(logo_path):
-        logo_img = Image.open(logo_path).convert("RGBA")
+    logo_source = (row_data.get("Logo") or "").strip()
+    logo_img = None
+
+    if logo_source:
+        if logo_source.startswith("http"):
+            logo_img = fetch_image_from_url(logo_source)
+        elif os.path.exists(logo_source):
+            logo_img = Image.open(logo_source).convert("RGBA")
+
+    if logo_img is None and os.path.exists("PTCG.png"):
+        logo_img = Image.open("PTCG.png").convert("RGBA")
+
+    if logo_img:
         logo_img.thumbnail((200, 60), Image.Resampling.LANCZOS)
         logo_x = (WIDTH - logo_img.width) // 2
         img.paste(logo_img, (logo_x, HEIGHT - 70), logo_img)
