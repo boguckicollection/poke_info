@@ -222,18 +222,21 @@ def generate_content_cards(row_data, index):
     MAX_Y = HEIGHT - FOOTER_HEIGHT - PADDING
     temp_draw = ImageDraw.Draw(Image.new('RGB', (1,1)))
 
-    y_cursor = PADDING + 80
     main_img_url = (row_data.get("Grafika") or "").split(';')[0].strip()
-    if main_img_url: y_cursor += 560
+    main_img = fetch_image_from_url(main_img_url) if main_img_url else None
+    if main_img:
+        main_img.thumbnail((WIDTH - 3 * PADDING, 500), Image.Resampling.LANCZOS)
+    main_img_height = main_img.height if main_img else 0
+    image_block_height = main_img_height + 60 if main_img_height else 0
+
+    y_cursor = PADDING + 80 + image_block_height
 
     for block in text_blocks:
         block_height = get_text_block_height(temp_draw, block, font_text)
         if y_cursor + block_height > MAX_Y and current_page_content:
             pages.append("\n".join(current_page_content))
             current_page_content = [block]
-            y_cursor = PADDING + 80
-            if main_img_url: y_cursor += 560
-            y_cursor += block_height
+            y_cursor = PADDING + 80 + image_block_height + block_height
         else:
             current_page_content.append(block)
             y_cursor += block_height
@@ -247,21 +250,16 @@ def generate_content_cards(row_data, index):
     for p, text_chunk in enumerate(pages):
         img = create_base_image(row_data)
         draw = ImageDraw.Draw(img)
-        
-        content_height = 0
-        if main_img_url: content_height += 560
-        content_height += get_text_block_height(draw, text_chunk, font_text)
+
+        content_height = image_block_height + get_text_block_height(draw, text_chunk, font_text)
         
         available_space = HEIGHT - PADDING - FOOTER_HEIGHT
         y_pos = PADDING + (available_space - content_height) / 2
 
-        if main_img_url:
-            main_img = fetch_image_from_url(main_img_url)
-            if main_img:
-                main_img.thumbnail((WIDTH - 3 * PADDING, 500), Image.Resampling.LANCZOS)
-                img_x = (WIDTH - main_img.width) // 2
-                img.paste(main_img, (img_x, int(y_pos)), main_img)
-                y_pos += main_img.height + 60
+        if main_img:
+            img_x = (WIDTH - main_img.width) // 2
+            img.paste(main_img, (img_x, int(y_pos)), main_img)
+            y_pos += main_img.height + 60
 
         draw_rich_text(draw, int(y_pos), text_chunk, font_text, highlight_font, highlight_color)
         
