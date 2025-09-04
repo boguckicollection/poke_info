@@ -61,7 +61,9 @@ def generate_gradient_frame(draw, colors):
         draw.rectangle((i, i, WIDTH - i, HEIGHT - i), outline=(r, g, b, alpha), width=1)
 
 def create_base_image(row_data):
-    image_source = row_data.get("Grafika", "")
+    # "Grafika" może zawierać wiele adresów URL oddzielonych średnikiem;
+    # pierwszy z nich służy jako tło planszy.
+    image_source = (row_data.get("Grafika") or "").split(';')[0].strip()
     kategoria = row_data.get('Kategoria', 'Domyślny')
     styl = CATEGORY_STYLES.get(kategoria, CATEGORY_STYLES['Domyślny'])
     base_image = fetch_image_from_url(image_source)
@@ -202,7 +204,11 @@ def get_text_block_height(draw, text_block, font):
     return y + line_height
 
 def generate_content_cards(row_data, index):
-    """Generuje standardowe plansze z treścią."""
+    """Generuje standardowe plansze z treścią.
+
+    W kolumnie "Grafika" można podać adresy URL oddzielone średnikiem;
+    w tej funkcji wykorzystywany jest jedynie pierwszy z nich.
+    """
     opis = row_data.get('Opis', "")
     font_text = ImageFont.truetype(FONT_PATH, 42)
     highlight_font = ImageFont.truetype(HIGHLIGHT_FONT_PATH, 44)
@@ -215,9 +221,10 @@ def generate_content_cards(row_data, index):
     current_page_content = []
     MAX_Y = HEIGHT - FOOTER_HEIGHT - PADDING
     temp_draw = ImageDraw.Draw(Image.new('RGB', (1,1)))
-    
+
     y_cursor = PADDING + 80
-    if row_data.get("Grafika"): y_cursor += 560
+    main_img_url = (row_data.get("Grafika") or "").split(';')[0].strip()
+    if main_img_url: y_cursor += 560
 
     for block in text_blocks:
         block_height = get_text_block_height(temp_draw, block, font_text)
@@ -225,7 +232,7 @@ def generate_content_cards(row_data, index):
             pages.append("\n".join(current_page_content))
             current_page_content = [block]
             y_cursor = PADDING + 80
-            if row_data.get("Grafika"): y_cursor += 560
+            if main_img_url: y_cursor += 560
             y_cursor += block_height
         else:
             current_page_content.append(block)
@@ -242,14 +249,14 @@ def generate_content_cards(row_data, index):
         draw = ImageDraw.Draw(img)
         
         content_height = 0
-        if row_data.get("Grafika"): content_height += 560
+        if main_img_url: content_height += 560
         content_height += get_text_block_height(draw, text_chunk, font_text)
         
         available_space = HEIGHT - PADDING - FOOTER_HEIGHT
         y_pos = PADDING + (available_space - content_height) / 2
 
-        if row_data.get("Grafika"):
-            main_img = fetch_image_from_url(row_data.get("Grafika"))
+        if main_img_url:
+            main_img = fetch_image_from_url(main_img_url)
             if main_img:
                 main_img.thumbnail((WIDTH - 3 * PADDING, 500), Image.Resampling.LANCZOS)
                 img_x = (WIDTH - main_img.width) // 2
@@ -266,9 +273,13 @@ def generate_content_cards(row_data, index):
 
 # --- NOWOŚĆ: Funkcja do generowania plansz dla rankingu ---
 def generate_ranking_cards(row_data, index):
-    """Generuje specjalne plansze dla kategorii 'Trendy cen'."""
+    """Generuje specjalne plansze dla kategorii 'Trendy cen'.
+
+    Dodatkowe grafiki kart są pobierane z kolumny "Grafika" –
+    po pierwszym adresie tła można dodać kolejne URL-e oddzielone średnikiem.
+    """
     opis = row_data.get('Opis', "")
-    graphics_urls = row_data.get('Karty_Grafiki', "").split(',')
+    graphics_urls = [u.strip() for u in (row_data.get('Grafika') or "").split(';')[1:] if u.strip()]
 
     list_items = re.findall(r'(\d+\.\s.*)', opis)
     if not list_items:
