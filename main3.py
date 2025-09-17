@@ -6,6 +6,7 @@ import re
 import requests
 import io
 from datetime import datetime
+from urllib.parse import urlparse
 
 # --- Konfiguracja ---
 WIDTH, HEIGHT = 1080, 1350
@@ -62,6 +63,51 @@ CONTENT_PANEL_IMAGE_INSET = 30
 CONTENT_PANEL_IMAGE_MAX_HEIGHT = 520
 CONTENT_PANEL_IMAGE_TEXT_GAP = 48
 
+def _extract_extension_from_source(source):
+    if not source or not isinstance(source, str):
+        return ""
+    parsed = urlparse(source)
+    path = parsed.path if parsed.scheme else source
+    _, ext = os.path.splitext(path)
+    return ext.lower()
+
+
+def _has_visible_alpha(image):
+    if image is None or image.mode not in ("RGBA", "LA"):
+        return False
+    try:
+        extrema = image.getchannel("A").getextrema()
+    except Exception:
+        return False
+    if not extrema:
+        return False
+    return extrema[0] < 255
+
+
+def _is_transparent_png(image, source_hint=None):
+    if image is None:
+        return False
+
+    has_alpha = getattr(image, "_has_transparency", None)
+    if has_alpha is None:
+        has_alpha = _has_visible_alpha(image)
+    if not has_alpha:
+        return False
+
+    format_hint = getattr(image, "_source_format", "") or ""
+    extension_hint = getattr(image, "_source_extension", "") or ""
+    if source_hint and not extension_hint:
+        extension_hint = _extract_extension_from_source(source_hint)
+
+    is_png = False
+    if format_hint:
+        is_png = format_hint.upper() == "PNG"
+    if not is_png and extension_hint:
+        is_png = extension_hint.lower() == ".png"
+
+    return is_png and has_alpha
+
+
 def fetch_image_from_url(url):
     if not url or not url.startswith('http'):
         return None
@@ -69,7 +115,17 @@ def fetch_image_from_url(url):
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
-        return Image.open(io.BytesIO(response.content)).convert("RGBA")
+
+        image_bytes = io.BytesIO(response.content)
+        with Image.open(image_bytes) as source_image:
+            source_format = (source_image.format or "").upper()
+            converted = source_image.convert("RGBA")
+
+        converted._source_format = source_format
+        converted._source_extension = _extract_extension_from_source(url)
+        converted._has_transparency = _has_visible_alpha(converted)
+
+        return converted
     except Exception as e:
         print(f"Błąd pobierania obrazu z URL {url}: {e}")
         return None
@@ -102,7 +158,7 @@ def _calculate_panel_bounds():
     return panel_bounds, content_bounds
 
 
-def apply_modern_layout(img, row_data):
+def apply_modern_layout(img, row_data, transparent_background=False):
     """Rysuje półtransparentny panel tła dla głównej treści."""
 
     panel_bounds, content_bounds = _calculate_panel_bounds()
@@ -110,6 +166,9 @@ def apply_modern_layout(img, row_data):
     panel_width = panel_bounds[2] - panel_bounds[0]
     panel_height = panel_bounds[3] - panel_bounds[1]
     if panel_width <= 0 or panel_height <= 0:
+        return content_bounds
+
+    if transparent_background:
         return content_bounds
 
     styl = CATEGORY_STYLES.get(row_data.get("Kategoria", ""), CATEGORY_STYLES["Domyślny"])
@@ -198,20 +257,22 @@ def create_base_image(row_data):
     kategoria = row_data.get('Kategoria', 'Domyślny')
     styl = CATEGORY_STYLES.get(kategoria, CATEGORY_STYLES['Domyślny'])
     base_image = fetch_image_from_url(image_source)
+    is_transparent_background = _is_transparent_png(base_image, image_source) if base_image else False
     if base_image:
         scale = max(WIDTH / base_image.width, HEIGHT / base_image.height)
         new_size = (int(base_image.width * scale), int(base_image.height * scale))
-        base_image = base_image.resize(new_size, Image.Resampling.LANCZOS)
-        left, top = (base_image.width - WIDTH) / 2, (base_image.height - HEIGHT) / 2
-        img = base_image.crop((left, top, left + WIDTH, top + HEIGHT))
-        img = img.filter(ImageFilter.GaussianBlur(30))
-        overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 160))
-        img = Image.alpha_composite(img, overlay)
+        resized_background = base_image.resize(new_size, Image.Resampling.LANCZOS)
+        left, top = (resized_background.width - WIDTH) / 2, (resized_background.height - HEIGHT) / 2
+        img = resized_background.crop((left, top, left + WIDTH, top + HEIGHT))
+        if not is_transparent_background:
+            img = img.filter(ImageFilter.GaussianBlur(30))
+            overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 160))
+            img = Image.alpha_composite(img, overlay)
     else:
         img = Image.new("RGBA", (WIDTH, HEIGHT), (30, 30, 30, 255))
     draw = ImageDraw.Draw(img)
     generate_gradient_frame(draw, styl['colors'])
-    return img
+    return img, is_transparent_background
 
 def add_common_elements(img, row_data, page_num, total_pages):
     draw = ImageDraw.Draw(img)
@@ -255,7 +316,7 @@ def add_common_elements(img, row_data, page_num, total_pages):
 
 def generate_title_card(row_data, index, total_pages):
     """Generuje planszę tytułową z idealnie wyśrodkowanym tekstem."""
-    img = create_base_image(row_data)
+    img, _ = create_base_image(row_data)
     draw = ImageDraw.Draw(img)
     
     tytul = row_data.get('Tytuł', 'Brak tytułu')
@@ -418,10 +479,14 @@ def generate_content_cards(row_data, index):
     card_images = []
     for url in card_image_urls:
         card_img = fetch_image_from_url(url)
+        is_transparent_card = False
         if card_img:
-            card_img = card_img.convert("RGBA")
+            is_transparent_card = _is_transparent_png(card_img, url)
             card_img.thumbnail((image_max_width, CONTENT_PANEL_IMAGE_MAX_HEIGHT), Image.Resampling.LANCZOS)
-        card_images.append(card_img)
+        card_images.append({
+            "image": card_img,
+            "is_transparent": is_transparent_card,
+        })
 
     def card_at(idx):
         return card_images[idx] if 0 <= idx < len(card_images) else None
@@ -433,8 +498,9 @@ def generate_content_cards(row_data, index):
     current_blocks = []
     current_text_height = 0
     card_pointer = 0
-    current_card_img = card_at(card_pointer)
-    current_image_block_height = get_image_block_height(current_card_img)
+    current_card_entry = card_at(card_pointer)
+    current_card_image = current_card_entry["image"] if current_card_entry else None
+    current_image_block_height = get_image_block_height(current_card_image)
 
     for block in text_blocks:
         block_height = get_text_block_height(temp_draw, block, font_text, highlight_font, content_width_preview)
@@ -442,43 +508,52 @@ def generate_content_cards(row_data, index):
         if current_blocks and projected_height > available_space_preview:
             pages.append({
                 "text": "\n".join(current_blocks),
-                "image": current_card_img,
+                "card": current_card_entry,
             })
             card_pointer += 1
-            current_card_img = card_at(card_pointer)
-            current_image_block_height = get_image_block_height(current_card_img)
+            current_card_entry = card_at(card_pointer)
+            current_card_image = current_card_entry["image"] if current_card_entry else None
+            current_image_block_height = get_image_block_height(current_card_image)
             current_blocks = []
             current_text_height = 0
 
         current_blocks.append(block)
         current_text_height += block_height
 
-    if current_blocks or current_card_img:
+    if current_blocks or current_card_entry:
         pages.append({
             "text": "\n".join(current_blocks),
-            "image": current_card_img,
+            "card": current_card_entry,
         })
         card_pointer += 1
 
     while card_pointer < len(card_images):
         pages.append({
             "text": "",
-            "image": card_at(card_pointer),
+            "card": card_at(card_pointer),
         })
         card_pointer += 1
 
     if not pages:
         pages.append({
             "text": "",
-            "image": None,
+            "card": None,
         })
 
     total_pages = 1 + len(pages)
     generate_title_card(row_data_with_bg, index, total_pages)
 
     for p, page_data in enumerate(pages):
-        img = create_base_image(row_data_with_bg)
-        content_bounds = apply_modern_layout(img, row_data_with_bg)
+        card_entry = page_data.get("card")
+        card_img_source = card_entry["image"] if card_entry else None
+        card_is_transparent = card_entry["is_transparent"] if card_entry else False
+
+        img, background_transparent = create_base_image(row_data_with_bg)
+        content_bounds = apply_modern_layout(
+            img,
+            row_data_with_bg,
+            transparent_background=background_transparent or card_is_transparent,
+        )
         content_left, content_top, content_right, content_bottom = content_bounds
         content_width = max(content_right - content_left, 1)
         available_space = max(content_bottom - content_top, 1)
@@ -486,9 +561,9 @@ def generate_content_cards(row_data, index):
         draw = ImageDraw.Draw(img)
 
         text_chunk = page_data["text"]
-        card_img = page_data["image"]
-        if card_img:
-            card_img = card_img.copy()
+        card_img = None
+        if card_img_source:
+            card_img = card_img_source.copy()
             card_img.thumbnail((max(1, content_width - 2 * CONTENT_PANEL_IMAGE_INSET), CONTENT_PANEL_IMAGE_MAX_HEIGHT), Image.Resampling.LANCZOS)
 
         image_block_height = get_image_block_height(card_img)
@@ -545,24 +620,33 @@ def generate_ranking_cards(row_data, index):
     highlight_color = (255, 223, 100)
 
     for i, item_text in enumerate(list_items):
-        img = create_base_image(row_data)
-        content_bounds = apply_modern_layout(img, row_data)
+        card_img_url = graphics_urls[i].strip() if i < len(graphics_urls) else None
+        card_img_source = None
+        card_is_transparent = False
+        if card_img_url:
+            card_img_source = fetch_image_from_url(card_img_url)
+            if card_img_source:
+                card_is_transparent = _is_transparent_png(card_img_source, card_img_url)
+
+        img, background_transparent = create_base_image(row_data)
+        content_bounds = apply_modern_layout(
+            img,
+            row_data,
+            transparent_background=background_transparent or card_is_transparent,
+        )
         content_left, content_top, content_right, content_bottom = content_bounds
         content_width = max(content_right - content_left, 1)
         available_space = max(content_bottom - content_top, 1)
 
         draw = ImageDraw.Draw(img)
 
-        card_img_url = graphics_urls[i].strip() if i < len(graphics_urls) else None
         card_img = None
-        if card_img_url:
-            card_img = fetch_image_from_url(card_img_url)
-            if card_img:
-                card_img = card_img.convert("RGBA")
-                card_img.thumbnail((
-                    max(1, content_width - 2 * CONTENT_PANEL_IMAGE_INSET),
-                    int(CONTENT_PANEL_IMAGE_MAX_HEIGHT * 1.25),
-                ), Image.Resampling.LANCZOS)
+        if card_img_source:
+            card_img = card_img_source.copy()
+            card_img.thumbnail((
+                max(1, content_width - 2 * CONTENT_PANEL_IMAGE_INSET),
+                int(CONTENT_PANEL_IMAGE_MAX_HEIGHT * 1.25),
+            ), Image.Resampling.LANCZOS)
 
         clean_text = re.sub(r'^\d+\.\s*', '', item_text).strip()
         rank_text = str(i + 1)
