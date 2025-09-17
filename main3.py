@@ -53,6 +53,15 @@ HIGHLIGHT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+CONTENT_PANEL_HORIZONTAL_GAP = 40
+CONTENT_PANEL_TOP_OFFSET = PADDING + 30
+CONTENT_PANEL_BOTTOM_OFFSET = FOOTER_HEIGHT + 30
+CONTENT_PANEL_RADIUS = 65
+CONTENT_PANEL_INNER_PADDING = 70
+CONTENT_PANEL_IMAGE_INSET = 30
+CONTENT_PANEL_IMAGE_MAX_HEIGHT = 520
+CONTENT_PANEL_IMAGE_TEXT_GAP = 48
+
 def fetch_image_from_url(url):
     if not url or not url.startswith('http'):
         return None
@@ -69,6 +78,104 @@ def draw_text_with_shadow(draw, position, text, font, fill_color, shadow_color=(
     x, y = position
     draw.text((x + shadow_offset[0], y + shadow_offset[1]), text, font=font, fill=shadow_color)
     draw.text(position, text, font=font, fill=fill_color)
+
+def _calculate_panel_bounds():
+    panel_left = max(20, PADDING - CONTENT_PANEL_HORIZONTAL_GAP)
+    panel_right = min(WIDTH - 20, WIDTH - (PADDING - CONTENT_PANEL_HORIZONTAL_GAP))
+    panel_top = max(PADDING, CONTENT_PANEL_TOP_OFFSET)
+    panel_bottom = HEIGHT - max(FOOTER_HEIGHT, CONTENT_PANEL_BOTTOM_OFFSET)
+
+    panel_bounds = (
+        int(panel_left),
+        int(panel_top),
+        int(panel_right),
+        int(panel_bottom),
+    )
+
+    content_bounds = (
+        panel_bounds[0] + CONTENT_PANEL_INNER_PADDING,
+        panel_bounds[1] + CONTENT_PANEL_INNER_PADDING,
+        panel_bounds[2] - CONTENT_PANEL_INNER_PADDING,
+        panel_bounds[3] - CONTENT_PANEL_INNER_PADDING,
+    )
+
+    return panel_bounds, content_bounds
+
+
+def apply_modern_layout(img, row_data):
+    """Rysuje półtransparentny panel tła dla głównej treści."""
+
+    panel_bounds, content_bounds = _calculate_panel_bounds()
+
+    panel_width = panel_bounds[2] - panel_bounds[0]
+    panel_height = panel_bounds[3] - panel_bounds[1]
+    if panel_width <= 0 or panel_height <= 0:
+        return content_bounds
+
+    styl = CATEGORY_STYLES.get(row_data.get("Kategoria", ""), CATEGORY_STYLES["Domyślny"])
+    c1, c2 = styl["colors"]
+
+    # Miękki cień
+    shadow = Image.new("RGBA", (panel_width + 80, panel_height + 80), (0, 0, 0, 0))
+    shadow_draw = ImageDraw.Draw(shadow)
+    shadow_draw.rounded_rectangle(
+        (40, 40, panel_width + 40, panel_height + 40),
+        radius=CONTENT_PANEL_RADIUS + 20,
+        fill=(0, 0, 0, 140),
+    )
+    shadow = shadow.filter(ImageFilter.GaussianBlur(45))
+    img.alpha_composite(shadow, dest=(panel_bounds[0] - 40, panel_bounds[1] - 20))
+
+    # Podstawowe wypełnienie panelu
+    panel_base = Image.new("RGBA", (panel_width, panel_height), (18, 18, 26, 220))
+    panel_mask = Image.new("L", (panel_width, panel_height), 0)
+    mask_draw = ImageDraw.Draw(panel_mask)
+    mask_draw.rounded_rectangle(
+        (0, 0, panel_width, panel_height),
+        radius=CONTENT_PANEL_RADIUS,
+        fill=255,
+    )
+
+    # Gradient akcentowy
+    gradient = Image.new("RGBA", (panel_width, panel_height), (0, 0, 0, 0))
+    gradient_draw = ImageDraw.Draw(gradient)
+    for y in range(panel_height):
+        ratio = y / max(panel_height - 1, 1)
+        r = int(c1[0] * (1 - ratio) + c2[0] * ratio)
+        g = int(c1[1] * (1 - ratio) + c2[1] * ratio)
+        b = int(c1[2] * (1 - ratio) + c2[2] * ratio)
+        gradient_draw.line([(0, y), (panel_width, y)], fill=(r, g, b, 85))
+
+    gradient = gradient.filter(ImageFilter.GaussianBlur(8))
+    panel_base = Image.alpha_composite(panel_base, gradient)
+
+    # Delikatna obwódka w kolorze akcentu
+    border = Image.new("RGBA", (panel_width, panel_height), (0, 0, 0, 0))
+    border_draw = ImageDraw.Draw(border)
+    border_draw.rounded_rectangle(
+        (4, 4, panel_width - 4, panel_height - 4),
+        radius=CONTENT_PANEL_RADIUS - 4,
+        outline=(c1[0], c1[1], c1[2], 140),
+        width=3,
+    )
+
+    panel_combined = Image.alpha_composite(panel_base, border)
+    panel_combined.putalpha(panel_mask)
+    img.alpha_composite(panel_combined, dest=panel_bounds[:2])
+
+    # Połysk górnej krawędzi
+    highlight = Image.new("RGBA", (panel_width, panel_height), (0, 0, 0, 0))
+    highlight_draw = ImageDraw.Draw(highlight)
+    highlight_draw.rounded_rectangle(
+        (0, 0, panel_width, panel_height // 2),
+        radius=CONTENT_PANEL_RADIUS,
+        fill=(255, 255, 255, 35),
+    )
+    highlight = highlight.filter(ImageFilter.GaussianBlur(25))
+    highlight.putalpha(panel_mask)
+    img.alpha_composite(highlight, dest=panel_bounds[:2])
+
+    return content_bounds
 
 def generate_gradient_frame(draw, colors):
     c1, c2 = colors
@@ -181,8 +288,9 @@ def generate_title_card(row_data, index, total_pages):
     print(f"Zapisano planszę tytułową: {filename}")
 
 
-def _build_wrapped_rich_text_lines(draw, text, font, highlight_font):
-    usable_width = WIDTH - 2 * PADDING
+def _build_wrapped_rich_text_lines(draw, text, font, highlight_font, usable_width):
+    if usable_width is None:
+        usable_width = WIDTH - 2 * PADDING
     wrapped_lines = []
 
     for raw_line in text.split('\n'):
@@ -198,7 +306,7 @@ def _build_wrapped_rich_text_lines(draw, text, font, highlight_font):
             word_width = draw.textbbox((0, 0), word, font=current_font)[2]
             space_after = draw.textbbox((0, 0), " ", font=current_font)[2]
 
-            if current_line and current_width + word_width > usable_width:
+            if current_line and usable_width and current_width + word_width > usable_width:
                 wrapped_lines.append(current_line)
                 current_line = []
                 current_width = 0
@@ -218,13 +326,17 @@ def _build_wrapped_rich_text_lines(draw, text, font, highlight_font):
     return wrapped_lines
 
 
-def draw_rich_text(draw, start_y, text, font, highlight_font, highlight_color):
+def draw_rich_text(draw, start_y, text, font, highlight_font, highlight_color, content_left, usable_width):
     """Rysuje tekst, wyróżniając kluczowe słowa, ceny i daty."""
+    if not text.strip():
+        return
+
     y = start_y
     line_height = font.getbbox("A")[3] + 15
-    usable_width = WIDTH - 2 * PADDING
+    if usable_width is None:
+        usable_width = WIDTH - 2 * PADDING
 
-    wrapped_lines = _build_wrapped_rich_text_lines(draw, text, font, highlight_font)
+    wrapped_lines = _build_wrapped_rich_text_lines(draw, text, font, highlight_font, usable_width)
 
     for line_tokens in wrapped_lines:
         line_width = 0
@@ -236,10 +348,10 @@ def draw_rich_text(draw, start_y, text, font, highlight_font, highlight_color):
             line_width = max(line_width, token_end)
             cursor += token["word_width"]
 
-        if usable_width > 0:
-            start_x = PADDING + (usable_width - line_width) / 2
+        if usable_width and usable_width > 0:
+            start_x = content_left + (usable_width - line_width) / 2
         else:
-            start_x = PADDING
+            start_x = content_left
 
         current_x = start_x
         for idx, token in enumerate(line_tokens):
@@ -260,10 +372,13 @@ def draw_rich_text(draw, start_y, text, font, highlight_font, highlight_color):
         y += line_height
 
 
-def get_text_block_height(draw, text_block, font, highlight_font):
+def get_text_block_height(draw, text_block, font, highlight_font, usable_width):
     """Oblicza wysokość bloku tekstu."""
+    if not text_block.strip():
+        return 0
+
     line_height = font.getbbox("A")[3] + 15
-    wrapped_lines = _build_wrapped_rich_text_lines(draw, text_block, font, highlight_font)
+    wrapped_lines = _build_wrapped_rich_text_lines(draw, text_block, font, highlight_font, usable_width)
     num_lines = max(len(wrapped_lines), 1)
     return num_lines * line_height
 
@@ -289,62 +404,73 @@ def generate_content_cards(row_data, index):
     highlight_font = ImageFont.truetype(HIGHLIGHT_FONT_PATH, 44)
     highlight_color = (255, 223, 100)
 
+    _, content_bounds_preview = _calculate_panel_bounds()
+    content_left_preview, content_top_preview, content_right_preview, content_bottom_preview = content_bounds_preview
+    content_width_preview = max(content_right_preview - content_left_preview, 1)
+    available_space_preview = max(content_bottom_preview - content_top_preview, 1)
+    image_max_width = max(1, content_width_preview - 2 * CONTENT_PANEL_IMAGE_INSET)
+
     opis_formatted = re.sub(r'(\s)(?=\d+\.)', '\n', opis)
     text_blocks = [block.strip() for block in opis_formatted.split('\n') if block.strip()]
 
-    temp_draw = ImageDraw.Draw(Image.new('RGB', (1,1)))
-    MAX_Y = HEIGHT - FOOTER_HEIGHT - PADDING
+    temp_draw = ImageDraw.Draw(Image.new('RGBA', (1, 1)))
 
     card_images = []
     for url in card_image_urls:
         card_img = fetch_image_from_url(url)
         if card_img:
-            card_img.thumbnail((WIDTH - 3 * PADDING, 500), Image.Resampling.LANCZOS)
+            card_img = card_img.convert("RGBA")
+            card_img.thumbnail((image_max_width, CONTENT_PANEL_IMAGE_MAX_HEIGHT), Image.Resampling.LANCZOS)
         card_images.append(card_img)
 
-    def get_card_for_page(idx):
-        return card_images[idx] if idx < len(card_images) else None
+    def card_at(idx):
+        return card_images[idx] if 0 <= idx < len(card_images) else None
 
     def get_image_block_height(card_image):
-        return card_image.height + 60 if card_image else 0
+        return card_image.height + CONTENT_PANEL_IMAGE_TEXT_GAP if card_image else 0
 
     pages = []
     current_blocks = []
-    page_index = 0
-    current_card_img = get_card_for_page(page_index)
+    current_text_height = 0
+    card_pointer = 0
+    current_card_img = card_at(card_pointer)
     current_image_block_height = get_image_block_height(current_card_img)
-    y_cursor = PADDING + 80 + current_image_block_height
 
     for block in text_blocks:
-        block_height = get_text_block_height(temp_draw, block, font_text, highlight_font)
-        if current_blocks and y_cursor + block_height > MAX_Y:
+        block_height = get_text_block_height(temp_draw, block, font_text, highlight_font, content_width_preview)
+        projected_height = current_image_block_height + current_text_height + block_height
+        if current_blocks and projected_height > available_space_preview:
             pages.append({
                 "text": "\n".join(current_blocks),
                 "image": current_card_img,
-                "image_block_height": current_image_block_height,
             })
-            page_index += 1
-            current_card_img = get_card_for_page(page_index)
+            card_pointer += 1
+            current_card_img = card_at(card_pointer)
             current_image_block_height = get_image_block_height(current_card_img)
-            y_cursor = PADDING + 80 + current_image_block_height
             current_blocks = []
+            current_text_height = 0
 
         current_blocks.append(block)
-        y_cursor += block_height
+        current_text_height += block_height
 
-    if current_blocks:
+    if current_blocks or current_card_img:
         pages.append({
             "text": "\n".join(current_blocks),
             "image": current_card_img,
-            "image_block_height": current_image_block_height,
         })
+        card_pointer += 1
 
-    if not pages:
-        first_card = get_card_for_page(0)
+    while card_pointer < len(card_images):
         pages.append({
             "text": "",
-            "image": first_card,
-            "image_block_height": get_image_block_height(first_card),
+            "image": card_at(card_pointer),
+        })
+        card_pointer += 1
+
+    if not pages:
+        pages.append({
+            "text": "",
+            "image": None,
         })
 
     total_pages = 1 + len(pages)
@@ -352,24 +478,41 @@ def generate_content_cards(row_data, index):
 
     for p, page_data in enumerate(pages):
         img = create_base_image(row_data_with_bg)
+        content_bounds = apply_modern_layout(img, row_data_with_bg)
+        content_left, content_top, content_right, content_bottom = content_bounds
+        content_width = max(content_right - content_left, 1)
+        available_space = max(content_bottom - content_top, 1)
+
         draw = ImageDraw.Draw(img)
 
         text_chunk = page_data["text"]
         card_img = page_data["image"]
-        image_block_height = page_data["image_block_height"]
+        if card_img:
+            card_img = card_img.copy()
+            card_img.thumbnail((max(1, content_width - 2 * CONTENT_PANEL_IMAGE_INSET), CONTENT_PANEL_IMAGE_MAX_HEIGHT), Image.Resampling.LANCZOS)
 
-        text_height = get_text_block_height(draw, text_chunk, font_text, highlight_font)
+        image_block_height = get_image_block_height(card_img)
+        text_height = get_text_block_height(draw, text_chunk, font_text, highlight_font, content_width) if text_chunk else 0
         content_height = image_block_height + text_height
 
-        available_space = HEIGHT - PADDING - FOOTER_HEIGHT
-        y_pos = PADDING + (available_space - content_height) / 2
+        y_pos = content_top + max(0, (available_space - content_height) / 2)
 
         if card_img:
-            img_x = (WIDTH - card_img.width) // 2
-            img.paste(card_img, (img_x, int(y_pos)), card_img)
-            y_pos += card_img.height + 60
+            img_x = content_left + (content_width - card_img.width) // 2
+            img.paste(card_img, (img_x, int(round(y_pos))), card_img)
+            y_pos += card_img.height + CONTENT_PANEL_IMAGE_TEXT_GAP
 
-        draw_rich_text(draw, int(y_pos), text_chunk, font_text, highlight_font, highlight_color)
+        if text_chunk:
+            draw_rich_text(
+                draw,
+                int(round(y_pos)),
+                text_chunk,
+                font_text,
+                highlight_font,
+                highlight_color,
+                content_left,
+                content_width,
+            )
 
         img = add_common_elements(img, row_data_with_bg, p + 2, total_pages)
 
@@ -399,54 +542,57 @@ def generate_ranking_cards(row_data, index):
     font_rank = ImageFont.truetype(HEADER_FONT_PATH, 150)
     font_text = ImageFont.truetype(FONT_PATH, 44)
     font_highlight = ImageFont.truetype(HIGHLIGHT_FONT_PATH, 54)
-    price_color = (255, 223, 100)
-
-    price_pattern = re.compile(r'\d[\d\s,.]*(?:zł|PLN|eur|USD|GBP|€|\$|£)', re.IGNORECASE)
+    highlight_color = (255, 223, 100)
 
     for i, item_text in enumerate(list_items):
         img = create_base_image(row_data)
+        content_bounds = apply_modern_layout(img, row_data)
+        content_left, content_top, content_right, content_bottom = content_bounds
+        content_width = max(content_right - content_left, 1)
+        available_space = max(content_bottom - content_top, 1)
+
         draw = ImageDraw.Draw(img)
 
         card_img_url = graphics_urls[i].strip() if i < len(graphics_urls) else None
-        content_y = PADDING
-
-        # Numer rankingu
-        draw_text_with_shadow(draw, (PADDING, content_y), str(i + 1), font_rank, "white", shadow_offset=(8, 8))
-        content_y += font_rank.getbbox("A")[3] + 40
-
-        # Grafika karty (powiększenie 2x)
+        card_img = None
         if card_img_url:
             card_img = fetch_image_from_url(card_img_url)
             if card_img:
-                scale_factor = 2
-                new_width = min(card_img.width * scale_factor, WIDTH - 2 * PADDING)
-                scale = new_width / card_img.width
-                new_height = int(card_img.height * scale)
-                card_img = card_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                card_img = card_img.convert("RGBA")
+                card_img.thumbnail((
+                    max(1, content_width - 2 * CONTENT_PANEL_IMAGE_INSET),
+                    int(CONTENT_PANEL_IMAGE_MAX_HEIGHT * 1.25),
+                ), Image.Resampling.LANCZOS)
 
-                img_x = (WIDTH - new_width) // 2
-                img.paste(card_img, (img_x, content_y), card_img)
-                content_y += new_height + 40
+        clean_text = re.sub(r'^\d+\.\s*', '', item_text).strip()
+        rank_text = str(i + 1)
+        rank_height = font_rank.getbbox("A")[3]
+        image_block_height = card_img.height + CONTENT_PANEL_IMAGE_TEXT_GAP if card_img else 0
+        text_height = get_text_block_height(draw, clean_text, font_text, font_highlight, content_width) if clean_text else 0
+        stack_height = rank_height + 30 + image_block_height + text_height
+        y_pos = content_top + max(0, (available_space - stack_height) / 2)
 
-        # Opis (bez numeru, z wyróżnionymi cenami)
-        clean_text = re.sub(r'^\d+\.\s*', '', item_text)
-        words = clean_text.split()
-        x = PADDING
-        y = content_y
-        max_x = WIDTH - PADDING
+        rank_width = draw.textbbox((0, 0), rank_text, font=font_rank)[2]
+        rank_x = content_left + (content_width - rank_width) / 2
+        draw_text_with_shadow(draw, (int(round(rank_x)), int(round(y_pos))), rank_text, font_rank, "white", shadow_offset=(8, 8))
+        y_pos += rank_height + 30
 
-        for word in words:
-            is_price = price_pattern.fullmatch(word)
-            current_font = font_highlight if is_price else font_text
-            color = price_color if is_price else "white"
-            w = draw.textbbox((0, 0), word, font=current_font)[2]
+        if card_img:
+            img_x = content_left + (content_width - card_img.width) // 2
+            img.paste(card_img, (img_x, int(round(y_pos))), card_img)
+            y_pos += card_img.height + CONTENT_PANEL_IMAGE_TEXT_GAP
 
-            if x + w > max_x:
-                x = PADDING
-                y += current_font.getbbox("A")[3] + 12
-
-            draw_text_with_shadow(draw, (x, y), word, current_font, color, shadow_offset=(2, 2))
-            x += w + draw.textbbox((0, 0), " ", font=current_font)[2]
+        if clean_text:
+            draw_rich_text(
+                draw,
+                int(round(y_pos)),
+                clean_text,
+                font_text,
+                font_highlight,
+                highlight_color,
+                content_left,
+                content_width,
+            )
 
         img = add_common_elements(img, row_data, i + 2, total_pages)
         filename = f"{OUTPUT_DIR}/infografika_{index}_{i+2:02d}_ranking.png"
