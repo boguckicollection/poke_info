@@ -352,35 +352,104 @@ def generate_title_card(row_data, index, total_pages):
 def _build_wrapped_rich_text_lines(draw, text, font, highlight_font, usable_width):
     if usable_width is None:
         usable_width = WIDTH - 2 * PADDING
+
+    whitespace_pattern = re.compile(r"\S+|\s+")
     wrapped_lines = []
 
-    for raw_line in text.split('\n'):
-        words = raw_line.split(' ')
+    for raw_line in text.split("\n"):
+        highlight_spans = [match.span() for match in HIGHLIGHT_PATTERN.finditer(raw_line)]
+
+        line_tokens = []
+        pending_whitespace = ""
+
+        def add_token(token_text, highlighted):
+            nonlocal pending_whitespace
+            if not token_text:
+                return
+
+            current_font = highlight_font if highlighted else font
+
+            if pending_whitespace:
+                if line_tokens:
+                    prev_token = line_tokens[-1]
+                    space_width = draw.textbbox((0, 0), pending_whitespace, font=prev_token["font"])[2]
+                    prev_token["space_after"] += space_width
+                else:
+                    token_text = pending_whitespace + token_text
+                pending_whitespace = ""
+
+            word_width = draw.textbbox((0, 0), token_text, font=current_font)[2]
+            line_tokens.append({
+                "text": token_text,
+                "font": current_font,
+                "is_highlighted": highlighted,
+                "word_width": word_width,
+                "space_after": 0,
+            })
+
+        def add_whitespace(ws_text):
+            nonlocal pending_whitespace
+            if ws_text:
+                pending_whitespace += ws_text
+
+        def process_normal_chunk(chunk_text):
+            for match in whitespace_pattern.finditer(chunk_text):
+                segment = match.group(0)
+                if segment.isspace():
+                    add_whitespace(segment)
+                else:
+                    add_token(segment, False)
+
+        def process_highlight_chunk(chunk_text):
+            if not chunk_text:
+                return
+
+            leading_len = len(chunk_text) - len(chunk_text.lstrip())
+            trailing_len = len(chunk_text) - len(chunk_text.rstrip())
+
+            core_start = leading_len
+            core_end = len(chunk_text) - trailing_len if trailing_len else len(chunk_text)
+
+            if leading_len:
+                add_whitespace(chunk_text[:core_start])
+
+            core_text = chunk_text[core_start:core_end]
+            if core_text:
+                add_token(core_text, True)
+
+            if trailing_len:
+                add_whitespace(chunk_text[core_end:])
+
+        cursor = 0
+        for span_start, span_end in highlight_spans:
+            if cursor < span_start:
+                process_normal_chunk(raw_line[cursor:span_start])
+            process_highlight_chunk(raw_line[span_start:span_end])
+            cursor = span_end
+
+        if cursor < len(raw_line):
+            process_normal_chunk(raw_line[cursor:])
+
+        if pending_whitespace and line_tokens:
+            space_width = draw.textbbox((0, 0), pending_whitespace, font=line_tokens[-1]["font"])[2]
+            line_tokens[-1]["space_after"] += space_width
+            pending_whitespace = ""
+
+        if not line_tokens:
+            wrapped_lines.append([])
+            continue
+
         current_line = []
         current_width = 0
 
-        for word in words:
-            clean_word = re.sub(r'[^\w\s-]', '', word)
-            is_highlighted = bool(HIGHLIGHT_PATTERN.fullmatch(clean_word))
-            current_font = highlight_font if is_highlighted else font
-
-            word_width = draw.textbbox((0, 0), word, font=current_font)[2]
-            space_after = draw.textbbox((0, 0), " ", font=current_font)[2]
-
-            if current_line and usable_width and current_width + word_width > usable_width:
+        for token in line_tokens:
+            if current_line and usable_width and current_width + token["word_width"] > usable_width:
                 wrapped_lines.append(current_line)
                 current_line = []
                 current_width = 0
 
-            current_line.append({
-                "text": word,
-                "font": current_font,
-                "is_highlighted": is_highlighted,
-                "word_width": word_width,
-                "space_after": space_after,
-            })
-
-            current_width += word_width + space_after
+            current_line.append(token)
+            current_width += token["word_width"] + token["space_after"]
 
         wrapped_lines.append(current_line)
 
