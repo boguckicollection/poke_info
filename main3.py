@@ -33,6 +33,26 @@ CATEGORY_STYLES = {
     "Domyślny": {"colors": [(200, 200, 200), (230, 230, 230)], "emoji": "ℹ️"}
 }
 
+HIGHLIGHT_PROPER_NAMES = [
+    "Lost Origin",
+    "151 ETB",
+    "Kingdra ex",
+    "Greninja ex",
+    "Prismatic Pokémon Center ETB",
+    "Mewtwo SVP052",
+    "Magneton PC",
+    "Noctowl PC",
+    "Celebration Fanfare",
+    "PSA 10",
+]
+HIGHLIGHT_PRICE_PATTERN = r'(\d[\d\s,.]*\s?(?:USD|dolarów|zł|PLN|eur|euro|£|GBP))'
+HIGHLIGHT_DATE_PATTERN = r'(\d{1,2}\s(?:stycznia|lutego|marca|kwietnia|maja|czerwca|lipca|sierpnia|września|października|listopada|grudnia)\s\d{4}\s?r?\.)'
+_proper_names_pattern = "|".join(re.escape(name) for name in HIGHLIGHT_PROPER_NAMES)
+HIGHLIGHT_PATTERN = re.compile(
+    f"({HIGHLIGHT_PRICE_PATTERN}|{HIGHLIGHT_DATE_PATTERN}|{_proper_names_pattern})",
+    re.IGNORECASE,
+)
+
 def fetch_image_from_url(url):
     if not url or not url.startswith('http'):
         return None
@@ -160,52 +180,93 @@ def generate_title_card(row_data, index, total_pages):
     img.save(filename)
     print(f"Zapisano planszę tytułową: {filename}")
 
+
+def _build_wrapped_rich_text_lines(draw, text, font, highlight_font):
+    usable_width = WIDTH - 2 * PADDING
+    wrapped_lines = []
+
+    for raw_line in text.split('\n'):
+        words = raw_line.split(' ')
+        current_line = []
+        current_width = 0
+
+        for word in words:
+            clean_word = re.sub(r'[^\w\s-]', '', word)
+            is_highlighted = bool(HIGHLIGHT_PATTERN.fullmatch(clean_word))
+            current_font = highlight_font if is_highlighted else font
+
+            word_width = draw.textbbox((0, 0), word, font=current_font)[2]
+            space_after = draw.textbbox((0, 0), " ", font=current_font)[2]
+
+            if current_line and current_width + word_width > usable_width:
+                wrapped_lines.append(current_line)
+                current_line = []
+                current_width = 0
+
+            current_line.append({
+                "text": word,
+                "font": current_font,
+                "is_highlighted": is_highlighted,
+                "word_width": word_width,
+                "space_after": space_after,
+            })
+
+            current_width += word_width + space_after
+
+        wrapped_lines.append(current_line)
+
+    return wrapped_lines
+
+
 def draw_rich_text(draw, start_y, text, font, highlight_font, highlight_color):
     """Rysuje tekst, wyróżniając kluczowe słowa, ceny i daty."""
     y = start_y
-    max_x = WIDTH - PADDING
     line_height = font.getbbox("A")[3] + 15
-    
-    price_pattern = r'(\d[\d\s,.]*\s?(?:USD|dolarów|zł|PLN|eur|euro|£|GBP))'
-    date_pattern = r'(\d{1,2}\s(?:stycznia|lutego|marca|kwietnia|maja|czerwca|lipca|sierpnia|września|października|listopada|grudnia)\s\d{4}\s?r?\.)'
-    proper_names = ['Lost Origin', '151 ETB', 'Kingdra ex', 'Greninja ex', 'Prismatic Pokémon Center ETB', 'Mewtwo SVP052', 'Magneton PC', 'Noctowl PC', 'Celebration Fanfare', 'PSA 10']
-    proper_names_pattern = '|'.join(re.escape(name) for name in proper_names)
-    full_pattern = re.compile(f'({price_pattern}|{date_pattern}|{proper_names_pattern})', re.IGNORECASE)
-    
-    lines = text.split('\n')
-    for line in lines:
-        x = PADDING
-        words = line.split(' ')
-        for word in words:
-            clean_word = re.sub(r'[^\w\s-]', '', word)
-            is_highlighted = full_pattern.fullmatch(clean_word)
-            current_font = highlight_font if is_highlighted else font
-            current_color = highlight_color if is_highlighted else "white"
-            
-            part_width = draw.textbbox((0,0), word, font=current_font)[2]
+    usable_width = WIDTH - 2 * PADDING
 
-            if x + part_width > max_x:
-                x = PADDING
-                y += line_height
+    wrapped_lines = _build_wrapped_rich_text_lines(draw, text, font, highlight_font)
 
-            draw_text_with_shadow(draw, (x, y), word, current_font, current_color, shadow_offset=(2,2))
-            x += part_width + draw.textbbox((0,0), " ", font=current_font)[2]
+    for line_tokens in wrapped_lines:
+        line_width = 0
+        cursor = 0
+        for idx, token in enumerate(line_tokens):
+            if idx > 0:
+                cursor += line_tokens[idx - 1]["space_after"]
+            token_end = cursor + token["word_width"]
+            line_width = max(line_width, token_end)
+            cursor += token["word_width"]
+
+        if usable_width > 0:
+            start_x = PADDING + (usable_width - line_width) / 2
+        else:
+            start_x = PADDING
+
+        current_x = start_x
+        for idx, token in enumerate(line_tokens):
+            if idx > 0:
+                current_x += line_tokens[idx - 1]["space_after"]
+
+            color = highlight_color if token["is_highlighted"] else "white"
+            draw_text_with_shadow(
+                draw,
+                (int(round(current_x)), y),
+                token["text"],
+                token["font"],
+                color,
+                shadow_offset=(2, 2),
+            )
+            current_x += token["word_width"]
+
         y += line_height
 
-def get_text_block_height(draw, text_block, font):
+
+def get_text_block_height(draw, text_block, font, highlight_font):
     """Oblicza wysokość bloku tekstu."""
-    y = 0
-    x = PADDING
-    max_x = WIDTH - PADDING
     line_height = font.getbbox("A")[3] + 15
-    words = text_block.split()
-    for word in words:
-        part_width = draw.textbbox((0,0), word, font=font)[2]
-        if x + part_width > max_x:
-            x = PADDING
-            y += line_height
-        x += part_width + draw.textbbox((0,0), " ", font=font)[2]
-    return y + line_height
+    wrapped_lines = _build_wrapped_rich_text_lines(draw, text_block, font, highlight_font)
+    num_lines = max(len(wrapped_lines), 1)
+    return num_lines * line_height
+
 
 def generate_content_cards(row_data, index):
     """Generuje standardowe plansze z treścią.
@@ -255,7 +316,7 @@ def generate_content_cards(row_data, index):
     y_cursor = PADDING + 80 + current_image_block_height
 
     for block in text_blocks:
-        block_height = get_text_block_height(temp_draw, block, font_text)
+        block_height = get_text_block_height(temp_draw, block, font_text, highlight_font)
         if current_blocks and y_cursor + block_height > MAX_Y:
             pages.append({
                 "text": "\n".join(current_blocks),
@@ -297,7 +358,7 @@ def generate_content_cards(row_data, index):
         card_img = page_data["image"]
         image_block_height = page_data["image_block_height"]
 
-        text_height = get_text_block_height(draw, text_chunk, font_text)
+        text_height = get_text_block_height(draw, text_chunk, font_text, highlight_font)
         content_height = image_block_height + text_height
 
         available_space = HEIGHT - PADDING - FOOTER_HEIGHT
