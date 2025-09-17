@@ -62,8 +62,12 @@ def generate_gradient_frame(draw, colors):
 
 def create_base_image(row_data):
     # "Grafika" może zawierać wiele adresów URL oddzielonych średnikiem;
-    # pierwszy z nich służy jako tło planszy.
-    image_source = (row_data.get("Grafika") or "").split(';')[0].strip()
+    # pierwszy z nich służy jako tło planszy. Jeśli w danych przekazano
+    # klucz `_background_url`, traktujemy go jako nadrzędny (np. po
+    # wcześniejszym parsowaniu pól w `generate_content_cards`).
+    image_source = row_data.get("_background_url")
+    if not image_source:
+        image_source = (row_data.get("Grafika") or "").split(';')[0].strip()
     kategoria = row_data.get('Kategoria', 'Domyślny')
     styl = CATEGORY_STYLES.get(kategoria, CATEGORY_STYLES['Domyślny'])
     base_image = fetch_image_from_url(image_source)
@@ -207,9 +211,19 @@ def generate_content_cards(row_data, index):
     """Generuje standardowe plansze z treścią.
 
     W kolumnie "Grafika" można podać adresy URL oddzielone średnikiem;
-    w tej funkcji wykorzystywany jest jedynie pierwszy z nich.
+    pierwszy z nich służy jako tło planszy, a kolejne – jako grafiki kart
+    przypisywane kolejno do stron z treścią.
     """
-    opis = row_data.get('Opis', "")
+
+    graphics_entries = [part.strip() for part in (row_data.get("Grafika") or "").split(';') if part.strip()]
+    background_url = graphics_entries[0] if graphics_entries else ""
+    card_image_urls = graphics_entries[1:]
+
+    row_data_with_bg = dict(row_data)
+    if background_url:
+        row_data_with_bg["_background_url"] = background_url
+
+    opis = row_data_with_bg.get('Opis', "")
     font_text = ImageFont.truetype(FONT_PATH, 42)
     highlight_font = ImageFont.truetype(HIGHLIGHT_FONT_PATH, 44)
     highlight_color = (255, 223, 100)
@@ -217,54 +231,87 @@ def generate_content_cards(row_data, index):
     opis_formatted = re.sub(r'(\s)(?=\d+\.)', '\n', opis)
     text_blocks = [block.strip() for block in opis_formatted.split('\n') if block.strip()]
 
-    pages = []
-    current_page_content = []
-    MAX_Y = HEIGHT - FOOTER_HEIGHT - PADDING
     temp_draw = ImageDraw.Draw(Image.new('RGB', (1,1)))
+    MAX_Y = HEIGHT - FOOTER_HEIGHT - PADDING
 
-    main_img_url = (row_data.get("Grafika") or "").split(';')[0].strip()
-    main_img = fetch_image_from_url(main_img_url) if main_img_url else None
-    if main_img:
-        main_img.thumbnail((WIDTH - 3 * PADDING, 500), Image.Resampling.LANCZOS)
-    main_img_height = main_img.height if main_img else 0
-    image_block_height = main_img_height + 60 if main_img_height else 0
+    card_images = []
+    for url in card_image_urls:
+        card_img = fetch_image_from_url(url)
+        if card_img:
+            card_img.thumbnail((WIDTH - 3 * PADDING, 500), Image.Resampling.LANCZOS)
+        card_images.append(card_img)
 
-    y_cursor = PADDING + 80 + image_block_height
+    def get_card_for_page(idx):
+        return card_images[idx] if idx < len(card_images) else None
+
+    def get_image_block_height(card_image):
+        return card_image.height + 60 if card_image else 0
+
+    pages = []
+    current_blocks = []
+    page_index = 0
+    current_card_img = get_card_for_page(page_index)
+    current_image_block_height = get_image_block_height(current_card_img)
+    y_cursor = PADDING + 80 + current_image_block_height
 
     for block in text_blocks:
         block_height = get_text_block_height(temp_draw, block, font_text)
-        if y_cursor + block_height > MAX_Y and current_page_content:
-            pages.append("\n".join(current_page_content))
-            current_page_content = [block]
-            y_cursor = PADDING + 80 + image_block_height + block_height
-        else:
-            current_page_content.append(block)
-            y_cursor += block_height
+        if current_blocks and y_cursor + block_height > MAX_Y:
+            pages.append({
+                "text": "\n".join(current_blocks),
+                "image": current_card_img,
+                "image_block_height": current_image_block_height,
+            })
+            page_index += 1
+            current_card_img = get_card_for_page(page_index)
+            current_image_block_height = get_image_block_height(current_card_img)
+            y_cursor = PADDING + 80 + current_image_block_height
+            current_blocks = []
 
-    if current_page_content: pages.append("\n".join(current_page_content))
-    if not pages: pages.append("")
-        
+        current_blocks.append(block)
+        y_cursor += block_height
+
+    if current_blocks:
+        pages.append({
+            "text": "\n".join(current_blocks),
+            "image": current_card_img,
+            "image_block_height": current_image_block_height,
+        })
+
+    if not pages:
+        first_card = get_card_for_page(0)
+        pages.append({
+            "text": "",
+            "image": first_card,
+            "image_block_height": get_image_block_height(first_card),
+        })
+
     total_pages = 1 + len(pages)
-    generate_title_card(row_data, index, total_pages)
-    
-    for p, text_chunk in enumerate(pages):
-        img = create_base_image(row_data)
+    generate_title_card(row_data_with_bg, index, total_pages)
+
+    for p, page_data in enumerate(pages):
+        img = create_base_image(row_data_with_bg)
         draw = ImageDraw.Draw(img)
 
-        content_height = image_block_height + get_text_block_height(draw, text_chunk, font_text)
-        
+        text_chunk = page_data["text"]
+        card_img = page_data["image"]
+        image_block_height = page_data["image_block_height"]
+
+        text_height = get_text_block_height(draw, text_chunk, font_text)
+        content_height = image_block_height + text_height
+
         available_space = HEIGHT - PADDING - FOOTER_HEIGHT
         y_pos = PADDING + (available_space - content_height) / 2
 
-        if main_img:
-            img_x = (WIDTH - main_img.width) // 2
-            img.paste(main_img, (img_x, int(y_pos)), main_img)
-            y_pos += main_img.height + 60
+        if card_img:
+            img_x = (WIDTH - card_img.width) // 2
+            img.paste(card_img, (img_x, int(y_pos)), card_img)
+            y_pos += card_img.height + 60
 
         draw_rich_text(draw, int(y_pos), text_chunk, font_text, highlight_font, highlight_color)
-        
-        img = add_common_elements(img, row_data, p + 2, total_pages)
-        
+
+        img = add_common_elements(img, row_data_with_bg, p + 2, total_pages)
+
         filename = f"{OUTPUT_DIR}/infografika_{index}_{p+2:02d}_tresc.png"
         img.save(filename)
         print(f"Zapisano planszę z treścią: {filename}")
