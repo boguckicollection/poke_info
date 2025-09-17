@@ -72,6 +72,86 @@ def _extract_extension_from_source(source):
     return ext.lower()
 
 
+_PORTAL_NAME_ALIASES = {
+    "allegro.pl": "Allegro",
+    "cardmarket.com": "Cardmarket",
+    "cardmarket.eu": "Cardmarket",
+    "ebay.com": "eBay",
+    "ebay.co.uk": "eBay",
+    "ebay.de": "eBay",
+    "facebook.com": "Facebook",
+    "instagram.com": "Instagram",
+    "pokebeach.com": "PokeBeach",
+    "pwcc.com": "PWCC",
+    "pwccmarketplace.com": "PWCC",
+    "tcgplayer.com": "TCGplayer",
+    "youtube.com": "YouTube",
+}
+
+
+def _extract_portal_name(source_text):
+    """Parse source URL and return a concise portal name."""
+    if not source_text or not isinstance(source_text, str):
+        return ""
+
+    raw_text = source_text.strip()
+    if not raw_text:
+        return ""
+
+    parsed = urlparse(raw_text)
+    if not parsed.scheme and not parsed.netloc:
+        parsed = urlparse(f"//{raw_text}")
+
+    host = parsed.netloc or ""
+    if not host and parsed.path:
+        potential_host = parsed.path.split("/")[0]
+        if "." in potential_host:
+            host = potential_host
+
+    if not host:
+        return ""
+
+    host = host.split("@")[-1].split(":")[0].lower()
+    if not host or " " in host or "." not in host:
+        return ""
+
+    host_without_www = host[4:] if host.startswith("www.") else host
+    host_parts = [part for part in host_without_www.split(".") if part]
+    if not host_parts:
+        return ""
+
+    candidate_hosts = [host_without_www, host]
+    if len(host_parts) >= 2:
+        base_domain = ".".join(host_parts[-2:])
+        if len(host_parts) >= 3 and len(host_parts[-1]) <= 2 and len(host_parts[-2]) <= 3:
+            base_domain = ".".join(host_parts[-3:])
+        candidate_hosts.append(base_domain)
+
+    for candidate in candidate_hosts:
+        alias = _PORTAL_NAME_ALIASES.get(candidate)
+        if alias:
+            return alias
+
+    if len(host_parts) == 1:
+        main_part = host_parts[0]
+    else:
+        tld = host_parts[-1]
+        second_level = host_parts[-2]
+        if len(host_parts) >= 3 and len(tld) <= 2 and len(second_level) <= 3:
+            main_part = host_parts[-3]
+        else:
+            main_part = second_level
+
+    if not main_part:
+        return ""
+
+    cleaned = main_part.replace("-", " ").replace("_", " ").strip()
+    if not cleaned:
+        return ""
+
+    return cleaned.title()
+
+
 def _has_visible_alpha(image):
     if image is None or image.mode not in ("RGBA", "LA"):
         return False
@@ -282,7 +362,8 @@ def add_common_elements(img, row_data, page_num, total_pages):
 
     if source_text:
         draw.text((PADDING, HEIGHT - 120), "Źródło:", font=font_footer, fill=(180, 180, 180))
-        draw.text((PADDING, HEIGHT - 90), source_text, font=font_footer, fill="white")
+        portal_name = _extract_portal_name(source_text) or source_text
+        draw.text((PADDING, HEIGHT - 90), portal_name, font=font_footer, fill="white")
 
     page_info = f"{page_num}/{total_pages}"
     page_width = draw.textbbox((0, 0), page_info, font=font_number)[2]
