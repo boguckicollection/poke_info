@@ -214,7 +214,7 @@ def generate_content_cards(row_data, index):
     highlight_font = ImageFont.truetype(HIGHLIGHT_FONT_PATH, 44)
     highlight_color = (255, 223, 100)
 
-    opis_formatted = re.sub(r'(\s)(?=\d+\.)', r'\n', opis)
+    opis_formatted = re.sub(r'(\s)(?=\d+\.)', '\n', opis)
     text_blocks = [block.strip() for block in opis_formatted.split('\n') if block.strip()]
 
     pages = []
@@ -367,6 +367,10 @@ def main():
         with open(csv_file, mode='r', newline='', encoding='utf-8-sig') as f:
             reader = csv.DictReader(row for row in f if row.strip())
             for i, row in enumerate(reader):
+                row = {
+                    key: value.replace('\\n', '\n') if isinstance(value, str) else value
+                    for key, value in row.items()
+                }
                 print(f"\n--- Przetwarzanie artykułu #{i}: {row.get('Tytuł', '')} ---")
                 if row.get('Kategoria') == 'Trendy cen':
                     generate_ranking_cards(row, i)
