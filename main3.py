@@ -404,10 +404,26 @@ def create_base_image(row_data):
         resized_background = base_image.resize(new_size, Image.Resampling.LANCZOS)
         left, top = (resized_background.width - WIDTH) / 2, (resized_background.height - HEIGHT) / 2
         img = resized_background.crop((left, top, left + WIDTH, top + HEIGHT))
-        if not is_transparent_background:
-            img = img.filter(ImageFilter.GaussianBlur(30))
-            overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 160))
-            img = Image.alpha_composite(img, overlay)
+
+        alpha_channel = None
+        if "A" in img.getbands():
+            try:
+                alpha_channel = img.getchannel("A")
+            except Exception:
+                alpha_channel = None
+
+        img_rgb = img.convert("RGB")
+        img_rgb = img_rgb.filter(ImageFilter.GaussianBlur(30))
+
+        overlay_alpha = 160
+        overlay_strength = overlay_alpha / 255
+        if overlay_strength > 0:
+            dark_overlay = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
+            img_rgb = Image.blend(img_rgb, dark_overlay, overlay_strength)
+
+        img = img_rgb.convert("RGBA")
+        if alpha_channel is not None:
+            img.putalpha(alpha_channel)
     else:
         img = Image.new("RGBA", (WIDTH, HEIGHT), (30, 30, 30, 255))
     draw = ImageDraw.Draw(img)
