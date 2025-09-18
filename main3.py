@@ -72,6 +72,28 @@ def _extract_extension_from_source(source):
     return ext.lower()
 
 
+def _get_row_title(row_data, default=""):
+    """Return the title value supporting both accented and unaccented keys."""
+    if not row_data:
+        return default
+
+    title_keys = ("Tytuł", "Tytul")
+
+    for key in title_keys:
+        if key in row_data:
+            value = row_data.get(key)
+            if value not in (None, ""):
+                return value
+
+    for key in title_keys:
+        if key in row_data:
+            value = row_data.get(key)
+            if value is not None:
+                return value
+
+    return default
+
+
 _PORTAL_NAME_ALIASES = {
     "allegro.pl": "Allegro",
     "cardmarket.com": "Cardmarket",
@@ -438,7 +460,7 @@ def generate_title_card(row_data, index, total_pages):
     img, _ = create_base_image(row_data)
     draw = ImageDraw.Draw(img)
     
-    tytul = row_data.get('Tytuł', 'Brak tytułu')
+    tytul = _get_row_title(row_data, 'Brak tytułu')
     font_title = ImageFont.truetype(HEADER_FONT_PATH, 90)
     
     words = tytul.split()
@@ -903,7 +925,8 @@ def main():
                     key: value.replace('\\n', '\n') if isinstance(value, str) else value
                     for key, value in row.items()
                 }
-                print(f"\n--- Przetwarzanie artykułu #{i}: {row.get('Tytuł', '')} ---")
+                title_for_log = _get_row_title(row, "")
+                print(f"\n--- Przetwarzanie artykułu #{i}: {title_for_log} ---")
                 if row.get('Kategoria') == 'Trendy cen':
                     generate_ranking_cards(row, i)
                 else:
