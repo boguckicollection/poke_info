@@ -326,14 +326,52 @@ def generate_gradient_frame(draw, colors):
         alpha = 180
         draw.rectangle((i, i, WIDTH - i, HEIGHT - i), outline=(r, g, b, alpha), width=1)
 
+
+def _normalize_url_value(value):
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    return str(value).strip()
+
+
+def _resolve_background_source(row_data):
+    if not row_data:
+        return ""
+
+    for key in ("Tło", "_background_url"):
+        candidate = _normalize_url_value(row_data.get(key))
+        if candidate:
+            return candidate
+
+    grafika_value = row_data.get("Grafika")
+    if isinstance(grafika_value, str):
+        for part in grafika_value.split(';'):
+            candidate = _normalize_url_value(part)
+            if candidate:
+                return candidate
+    else:
+        candidate = _normalize_url_value(grafika_value)
+        if candidate:
+            return candidate
+
+    return ""
+
+
+def _prepare_row_with_background(row_data):
+    prepared = dict(row_data) if row_data else {}
+    background_url = _resolve_background_source(prepared)
+    if background_url:
+        prepared["_background_url"] = background_url
+        current_background = _normalize_url_value(prepared.get("Tło"))
+        if not current_background:
+            prepared["Tło"] = background_url
+    return prepared, background_url
+
+
 def create_base_image(row_data):
-    # "Grafika" może zawierać wiele adresów URL oddzielonych średnikiem;
-    # pierwszy z nich służy jako tło planszy. Jeśli w danych przekazano
-    # klucz `_background_url`, traktujemy go jako nadrzędny (np. po
-    # wcześniejszym parsowaniu pól w `generate_content_cards`).
-    image_source = row_data.get("_background_url")
-    if not image_source:
-        image_source = (row_data.get("Grafika") or "").split(';')[0].strip()
+    # Priorytet źródła tła: "Tło" > `_background_url` > pierwszy wpis z "Grafika".
+    image_source = _resolve_background_source(row_data)
     kategoria = row_data.get('Kategoria', 'Domyślny')
     styl = CATEGORY_STYLES.get(kategoria, CATEGORY_STYLES['Domyślny'])
     base_image = fetch_image_from_url(image_source)
@@ -597,18 +635,18 @@ def get_text_block_height(draw, text_block, font, highlight_font, usable_width):
 def generate_content_cards(row_data, index):
     """Generuje standardowe plansze z treścią.
 
-    W kolumnie "Grafika" można podać adresy URL oddzielone średnikiem;
-    pierwszy z nich służy jako tło planszy, a kolejne – jako grafiki kart
-    przypisywane kolejno do stron z treścią.
+    Kolumna "Tło" określa grafikę tła planszy. Kolumna "Grafika" może
+    zawierać wiele adresów URL oddzielonych średnikiem – każdy z nich
+    traktowany jest jako grafika karty przypisywana kolejno do stron
+    z treścią.
     """
 
-    graphics_entries = [part.strip() for part in (row_data.get("Grafika") or "").split(';') if part.strip()]
-    background_url = graphics_entries[0] if graphics_entries else ""
-    card_image_urls = graphics_entries[1:]
+    row_data_with_bg, _ = _prepare_row_with_background(row_data)
 
-    row_data_with_bg = dict(row_data)
-    if background_url:
-        row_data_with_bg["_background_url"] = background_url
+    graphics_entries = [
+        part.strip() for part in (row_data_with_bg.get("Grafika") or "").split(';') if part.strip()
+    ]
+    card_image_urls = graphics_entries
 
     opis = row_data_with_bg.get('Opis', "")
     font_text = ImageFont.truetype(FONT_PATH, 42)
@@ -749,20 +787,26 @@ def generate_content_cards(row_data, index):
 def generate_ranking_cards(row_data, index):
     """Generuje specjalne plansze dla kategorii 'Trendy cen'.
 
-    Dodatkowe grafiki kart są pobierane z kolumny "Grafika" –
-    po pierwszym adresie tła można dodać kolejne URL-e oddzielone średnikiem.
+    Tło planszy pobierane jest z kolumny "Tło" (z obsługą wartości
+    zastępczych jak w `generate_content_cards`). Wszystkie adresy z
+    kolumny "Grafika" traktowane są jako kolejne grafiki kart.
     """
-    opis = row_data.get('Opis', "")
-    graphics_urls = [u.strip() for u in (row_data.get('Grafika') or "").split(';')[1:] if u.strip()]
+
+    row_data_with_bg, _ = _prepare_row_with_background(row_data)
+
+    opis = row_data_with_bg.get('Opis', "")
+    graphics_urls = [
+        u.strip() for u in (row_data_with_bg.get('Grafika') or "").split(';') if u.strip()
+    ]
 
     list_items = re.findall(r'(\d+\.\s.*)', opis)
     if not list_items:
         print("Nie znaleziono listy numerowanej w opisie dla rankingu. Generowanie standardowe.")
-        generate_content_cards(row_data, index)
+        generate_content_cards(row_data_with_bg, index)
         return
 
     total_pages = 1 + len(list_items)
-    generate_title_card(row_data, index, total_pages)
+    generate_title_card(row_data_with_bg, index, total_pages)
 
     font_rank = ImageFont.truetype(HEADER_FONT_PATH, 150)
     font_text = ImageFont.truetype(FONT_PATH, 44)
@@ -778,10 +822,10 @@ def generate_ranking_cards(row_data, index):
             if card_img_source:
                 card_is_transparent = _is_transparent_png(card_img_source, card_img_url)
 
-        img, background_transparent = create_base_image(row_data)
+        img, background_transparent = create_base_image(row_data_with_bg)
         content_bounds = apply_modern_layout(
             img,
-            row_data,
+            row_data_with_bg,
             transparent_background=background_transparent or card_is_transparent,
         )
         content_left, content_top, content_right, content_bottom = content_bounds
@@ -828,7 +872,7 @@ def generate_ranking_cards(row_data, index):
                 content_width,
             )
 
-        img = add_common_elements(img, row_data, i + 2, total_pages)
+        img = add_common_elements(img, row_data_with_bg, i + 2, total_pages)
         filename = f"{OUTPUT_DIR}/infografika_{index}_{i+2:02d}_ranking.png"
         img.save(filename)
         print(f"Zapisano planszę rankingu: {filename}")
