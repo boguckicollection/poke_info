@@ -379,13 +379,12 @@ if __name__ == "__main__":
         exit()
 
 
-    for index, row in df.iterrows():
-        topic_index = index + 1
+    for topic_index, (_, row) in enumerate(df.iterrows(), start=1):
         # Sanitize title for directory name more robustly
         safe_title = re.sub(r'[^\w\s-]', '', row['tytul']).replace(' ', '_')
         if not safe_title: # Fallback if title becomes empty after sanitization
             safe_title = f"untitled_topic_{topic_index}"
-        
+
         topic_dir = os.path.join(OUTPUT_DIR, f"{topic_index}_{safe_title}")
         os.makedirs(topic_dir, exist_ok=True)
         
