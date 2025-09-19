@@ -5,6 +5,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import re
 import requests
 import io
+import unicodedata
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -79,30 +80,22 @@ def _extract_extension_from_source(source):
 
 def _get_row_title(row_data, default=""):
     """Return the title value supporting both accented and unaccented keys."""
-    if not row_data:
-        return default
-
-    title_keys = ("Tytuł", "Tytul")
-
-    for key in title_keys:
-        if key in row_data:
-            value = row_data.get(key)
-            if value not in (None, ""):
-                return value
-
-    for key in title_keys:
-        if key in row_data:
-            value = row_data.get(key)
-            if value is not None:
-                return value
-
-    return default
+    return _get_row_value_with_variants(
+        row_data,
+        ("Tytuł", "Tytul", "tytuł", "tytul"),
+        default,
+    )
 
 
 def _normalize_key_name(key):
     if not isinstance(key, str):
         return ""
-    return re.sub(r"[\s_]", "", key).lower()
+
+    normalized = unicodedata.normalize("NFKD", key)
+    normalized = "".join(
+        char for char in normalized if not unicodedata.combining(char)
+    )
+    return re.sub(r"[\s_]", "", normalized).lower()
 
 
 def _get_row_value_with_variants(row_data, keys, default=""):
