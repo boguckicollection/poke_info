@@ -62,6 +62,11 @@ CONTENT_PANEL_INNER_PADDING = 70
 CONTENT_PANEL_IMAGE_INSET = 30
 CONTENT_PANEL_IMAGE_MAX_HEIGHT = 520
 CONTENT_PANEL_IMAGE_TEXT_GAP = 48
+PRICE_COMPONENT_SPACING = 26
+PRICE_BLOCK_TO_TEXT_GAP = 36
+SPARKLINE_HEIGHT = 140
+SPARKLINE_MIN_WIDTH = 240
+SPARKLINE_MAX_WIDTH = 720
 
 def _extract_extension_from_source(source):
     if not source or not isinstance(source, str):
@@ -145,6 +150,7 @@ def _get_row_value_with_variants(row_data, keys, default=""):
 
 
 _NUMBERING_SPLIT_RE = re.compile(r"\d+\.\s*")
+_NUMERIC_EXTRACTION_RE = re.compile(r"-?\d[\d\s]*(?:[.,]\d+)?")
 
 
 def _extract_numbered_items(raw_value):
@@ -167,6 +173,243 @@ def _extract_numbered_items(raw_value):
             items.append(text)
 
     return items
+
+
+def _measure_text_height(font, text):
+    if not font or not text:
+        return 0
+    bbox = font.getbbox(str(text))
+    return max(0, bbox[3] - bbox[1])
+
+
+def _split_series_groups(raw_value, expected_groups=None):
+    if not raw_value or not isinstance(raw_value, str):
+        return []
+
+    normalized = raw_value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        return []
+
+    candidate_groups = []
+
+    double_newline_groups = [seg.strip() for seg in re.split(r"\n{2,}", normalized) if seg.strip()]
+    if double_newline_groups:
+        candidate_groups.append(double_newline_groups)
+
+    pipe_groups = [seg.strip() for seg in normalized.split("|") if seg.strip()]
+    if len(pipe_groups) > 1:
+        candidate_groups.append(pipe_groups)
+
+    double_semicolon_groups = [seg.strip() for seg in re.split(r";{2,}", normalized) if seg.strip()]
+    if len(double_semicolon_groups) > 1:
+        candidate_groups.append(double_semicolon_groups)
+
+    newline_groups = [seg.strip() for seg in normalized.split("\n") if seg.strip()]
+    if len(newline_groups) > 1:
+        candidate_groups.append(newline_groups)
+
+    if not candidate_groups:
+        return [normalized]
+
+    if expected_groups:
+        candidate_groups = sorted(
+            candidate_groups,
+            key=lambda g: (abs(len(g) - expected_groups), -len(g)),
+        )
+        return candidate_groups[0]
+
+    return max(candidate_groups, key=len)
+
+
+def _split_segment_entries(segment):
+    if not segment:
+        return []
+
+    normalized = str(segment).replace("\r", "\n")
+    normalized = normalized.replace("|", ";")
+    normalized = normalized.replace("\n", ";")
+    entries = [entry.strip() for entry in re.split(r";{1,}", normalized) if entry.strip()]
+    return entries
+
+
+def _ensure_series_length(groups, expected_length):
+    if expected_length is None:
+        return list(groups)
+
+    result = list(groups)
+    while len(result) < expected_length:
+        result.append("")
+    if len(result) > expected_length:
+        result = result[:expected_length]
+    return result
+
+
+def _parse_price_series(raw_value, expected_length=None):
+    groups = _split_series_groups(raw_value, expected_length)
+    target_length = expected_length if expected_length is not None else len(groups)
+    groups = _ensure_series_length(groups, target_length)
+
+    parsed = []
+    for group in groups:
+        numeric_values = []
+        for entry in _split_segment_entries(group):
+            match = _NUMERIC_EXTRACTION_RE.search(entry)
+            if not match:
+                continue
+            normalized = match.group(0).replace(" ", "").replace(",", ".")
+            try:
+                numeric_values.append(float(normalized))
+            except ValueError:
+                continue
+        parsed.append(numeric_values)
+
+    return parsed
+
+
+def _parse_date_series(raw_value, expected_length=None):
+    groups = _split_series_groups(raw_value, expected_length)
+    target_length = expected_length if expected_length is not None else len(groups)
+    groups = _ensure_series_length(groups, target_length)
+
+    parsed = []
+    for group in groups:
+        parsed.append(_split_segment_entries(group))
+
+    return parsed
+
+
+def _format_price_value(value):
+    formatted = f"{value:,.2f}".replace(",", " ")
+    return formatted.replace(".", ",")
+
+
+def _create_sparkline_image(prices, width, height=SPARKLINE_HEIGHT, padding=18):
+    if not prices or len(prices) < 2:
+        return None
+
+    width = int(round(width))
+    min_width = max(int(padding * 2 + 20), 120)
+    if width < min_width:
+        width = min_width
+    if width > SPARKLINE_MAX_WIDTH:
+        width = SPARKLINE_MAX_WIDTH
+    height = max(int(round(height)), padding * 2 + 2)
+
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle(
+        [(0, 0), (width - 1, height - 1)],
+        radius=16,
+        fill=(0, 0, 0, 100),
+    )
+
+    min_price = min(prices)
+    max_price = max(prices)
+    price_range = max_price - min_price
+
+    usable_height = max(height - 2 * padding, 1)
+    usable_width = max(width - 2 * padding, 1)
+
+    points = []
+    if price_range == 0:
+        y = height / 2
+        line_color = (190, 190, 190, 255)
+        draw.line((padding, y, width - padding, y), fill=line_color, width=6)
+        for x in (padding, width - padding):
+            draw.ellipse((x - 6, y - 6, x + 6, y + 6), fill=line_color)
+        return image
+
+    step = usable_width / (len(prices) - 1)
+    for idx, price in enumerate(prices):
+        x = padding + step * idx
+        normalized = (price - min_price) / price_range if price_range else 0
+        y = height - padding - normalized * usable_height
+        points.append((x, y))
+
+    for idx in range(len(points) - 1):
+        start = points[idx]
+        end = points[idx + 1]
+        diff = prices[idx + 1] - prices[idx]
+        if diff > 0:
+            color = (90, 200, 130, 255)
+        elif diff < 0:
+            color = (220, 85, 90, 255)
+        else:
+            color = (200, 200, 200, 255)
+        draw.line([start, end], fill=color, width=6)
+
+    for x, y in points:
+        draw.ellipse((x - 5, y - 5, x + 5, y + 5), fill=(245, 245, 245, 255))
+
+    return image
+
+
+def _prepare_price_components(prices, dates, font_price, font_small, content_width):
+    prices = list(prices or [])
+    dates = list(dates or [])
+
+    current_price = prices[-1] if prices else None
+    last_date = dates[-1] if dates else ""
+
+    components = []
+
+    if current_price is not None:
+        price_text = f"Aktualna cena: {_format_price_value(current_price)} PLN"
+        components.append({
+            "type": "text",
+            "text": price_text,
+            "font": font_price,
+            "fill": "white",
+            "shadow": True,
+            "height": _measure_text_height(font_price, price_text),
+        })
+
+    sparkline_img = None
+    if prices and len(prices) >= 2 and content_width:
+        sparkline_width = min(
+            max(int(content_width * 0.9), SPARKLINE_MIN_WIDTH),
+            SPARKLINE_MAX_WIDTH,
+        )
+        max_available_width = max(int(content_width - 20), 120)
+        sparkline_width = min(sparkline_width, max_available_width)
+        sparkline_img = _create_sparkline_image(prices, sparkline_width)
+        if sparkline_img:
+            components.append({
+                "type": "image",
+                "image": sparkline_img,
+                "height": sparkline_img.height,
+            })
+
+    if not sparkline_img:
+        if current_price is not None:
+            fallback_text = "Brak historii zmian cen"
+        else:
+            fallback_text = "Brak danych cenowych"
+        components.append({
+            "type": "text",
+            "text": fallback_text,
+            "font": font_small,
+            "fill": (225, 225, 225),
+            "shadow": False,
+            "height": _measure_text_height(font_small, fallback_text),
+        })
+
+    if last_date:
+        legend_text = f"Raport: {last_date}"
+        components.append({
+            "type": "text",
+            "text": legend_text,
+            "font": font_small,
+            "fill": (210, 210, 210),
+            "shadow": False,
+            "height": _measure_text_height(font_small, legend_text),
+        })
+
+    total_height = sum(component["height"] for component in components)
+    if components:
+        total_height += PRICE_COMPONENT_SPACING * (len(components) - 1)
+
+    return components, total_height
 
 
 def _strip_leading_numbering(text):
@@ -933,6 +1176,49 @@ def generate_ranking_cards(row_data, index):
         generate_content_cards(row_data_with_bg, index)
         return
 
+    price_values_raw = _get_row_value_with_variants(
+        row_data_with_bg,
+        ("Ceny w PLN", "CenywPLN", "CenyPLN", "CenywPln", "Ceny wPLN", "Ceny"),
+        "",
+    )
+    price_series = _parse_price_series(price_values_raw, len(ranking_items))
+
+    date_values_raw = _get_row_value_with_variants(
+        row_data_with_bg,
+        (
+            "Daty w PLN",
+            "DatywPLN",
+            "Daty wPLN",
+            "Daty raportu",
+            "Daty raportów",
+            "Daty kart",
+            "DatyKart",
+            "Daty",
+        ),
+        "",
+    )
+    date_series = _parse_date_series(date_values_raw, len(ranking_items))
+
+    pricing_data = []
+    for idx in range(len(ranking_items)):
+        card_prices = price_series[idx] if idx < len(price_series) else []
+        card_dates = date_series[idx] if idx < len(date_series) else []
+
+        if card_dates and card_prices and len(card_dates) != len(card_prices):
+            sync_len = min(len(card_prices), len(card_dates))
+            if sync_len > 0:
+                card_prices = card_prices[-sync_len:]
+                card_dates = card_dates[-sync_len:]
+            else:
+                card_dates = []
+        elif card_dates and not card_prices:
+            card_dates = []
+
+        pricing_data.append({
+            "prices": card_prices,
+            "dates": card_dates,
+        })
+
     graphics_urls = [
         u.strip() for u in (row_data_with_bg.get('Grafika') or "").split(';') if u.strip()
     ]
@@ -943,6 +1229,8 @@ def generate_ranking_cards(row_data, index):
     font_rank = ImageFont.truetype(HEADER_FONT_PATH, 150)
     font_text = ImageFont.truetype(FONT_PATH, 44)
     font_highlight = ImageFont.truetype(HIGHLIGHT_FONT_PATH, 54)
+    font_price = ImageFont.truetype(HEADER_FONT_PATH, 90)
+    font_small = ImageFont.truetype(FONT_PATH, 36)
     highlight_color = (255, 223, 100)
 
     for i, item_text in enumerate(ranking_items):
@@ -975,11 +1263,22 @@ def generate_ranking_cards(row_data, index):
             ), Image.Resampling.LANCZOS)
 
         clean_text = _strip_leading_numbering(item_text)
+
+        card_price_info = pricing_data[i] if i < len(pricing_data) else {"prices": [], "dates": []}
+        price_components, price_block_height = _prepare_price_components(
+            card_price_info.get("prices", []),
+            card_price_info.get("dates", []),
+            font_price,
+            font_small,
+            content_width,
+        )
+        after_price_gap = PRICE_BLOCK_TO_TEXT_GAP if price_components and clean_text else 0
+
         rank_text = str(i + 1)
         rank_height = font_rank.getbbox("A")[3]
         image_block_height = card_img.height + CONTENT_PANEL_IMAGE_TEXT_GAP if card_img else 0
         text_height = get_text_block_height(draw, clean_text, font_text, font_highlight, content_width) if clean_text else 0
-        stack_height = rank_height + 30 + image_block_height + text_height
+        stack_height = rank_height + 30 + image_block_height + price_block_height + after_price_gap + text_height
         y_pos = content_top + max(0, (available_space - stack_height) / 2)
 
         rank_width = draw.textbbox((0, 0), rank_text, font=font_rank)[2]
@@ -991,6 +1290,37 @@ def generate_ranking_cards(row_data, index):
             img_x = content_left + (content_width - card_img.width) // 2
             img.paste(card_img, (img_x, int(round(y_pos))), card_img)
             y_pos += card_img.height + CONTENT_PANEL_IMAGE_TEXT_GAP
+
+        if price_components:
+            for component_index, component in enumerate(price_components):
+                if component.get("type") == "text":
+                    text_bbox = draw.textbbox((0, 0), component["text"], font=component["font"])
+                    text_width = text_bbox[2] - text_bbox[0]
+                    text_x = content_left + (content_width - text_width) / 2
+                    position = (int(round(text_x)), int(round(y_pos)))
+                    if component.get("shadow"):
+                        draw_text_with_shadow(
+                            draw,
+                            position,
+                            component["text"],
+                            component["font"],
+                            component.get("fill", "white"),
+                            shadow_offset=(4, 4),
+                        )
+                    else:
+                        draw.text(position, component["text"], font=component["font"], fill=component.get("fill", "white"))
+                    y_pos += component["height"]
+                elif component.get("type") == "image" and component.get("image") is not None:
+                    spark_image = component["image"]
+                    spark_x = content_left + (content_width - spark_image.width) // 2
+                    img.paste(spark_image, (int(round(spark_x)), int(round(y_pos))), spark_image)
+                    y_pos += spark_image.height
+
+                if component_index < len(price_components) - 1:
+                    y_pos += PRICE_COMPONENT_SPACING
+
+            if after_price_gap:
+                y_pos += after_price_gap
 
         if clean_text:
             draw_rich_text(
