@@ -94,6 +94,87 @@ def _get_row_title(row_data, default=""):
     return default
 
 
+def _normalize_key_name(key):
+    if not isinstance(key, str):
+        return ""
+    return re.sub(r"[\s_]", "", key).lower()
+
+
+def _get_row_value_with_variants(row_data, keys, default=""):
+    if not row_data:
+        return default
+
+    if isinstance(keys, str):
+        keys = (keys,)
+
+    normalized_map = {}
+    for existing_key in row_data.keys():
+        normalized_key = _normalize_key_name(existing_key)
+        if normalized_key and normalized_key not in normalized_map:
+            normalized_map[normalized_key] = existing_key
+
+    for key in keys:
+        if key in row_data:
+            value = row_data.get(key)
+            if value not in (None, ""):
+                return value
+
+    for key in keys:
+        normalized_key = _normalize_key_name(key)
+        original_key = normalized_map.get(normalized_key)
+        if original_key:
+            value = row_data.get(original_key)
+            if value not in (None, ""):
+                return value
+
+    for key in keys:
+        if key in row_data:
+            value = row_data.get(key)
+            if value is not None:
+                return value
+
+    for key in keys:
+        normalized_key = _normalize_key_name(key)
+        original_key = normalized_map.get(normalized_key)
+        if original_key:
+            value = row_data.get(original_key)
+            if value is not None:
+                return value
+
+    return default
+
+
+_NUMBERING_SPLIT_RE = re.compile(r"\d+\.\s*")
+
+
+def _extract_numbered_items(raw_value):
+    if not raw_value or not isinstance(raw_value, str):
+        return []
+
+    normalized = raw_value.replace("\r\n", "\n")
+    matches = list(_NUMBERING_SPLIT_RE.finditer(normalized))
+    if not matches:
+        return []
+
+    segments = _NUMBERING_SPLIT_RE.split(normalized)
+    if segments:
+        segments = segments[1:]
+
+    items = []
+    for segment in segments[:len(matches)]:
+        text = segment.strip()
+        if text:
+            items.append(text)
+
+    return items
+
+
+def _strip_leading_numbering(text):
+    if not text or not isinstance(text, str):
+        return ""
+    return re.sub(r"^\s*\d+\.\s*", "", text).strip()
+
+
 _PORTAL_NAME_ALIASES = {
     "allegro.pl": "Allegro",
     "cardmarket.com": "Cardmarket",
@@ -831,18 +912,32 @@ def generate_ranking_cards(row_data, index):
 
     row_data_with_bg, _ = _prepare_row_with_background(row_data)
 
-    opis = row_data_with_bg.get('Opis', "")
+    list_value = _get_row_value_with_variants(
+        row_data_with_bg,
+        ("Lista kart", "Lista Kart", "Lista_kart", "ListaKart"),
+        "",
+    )
+    ranking_items = _extract_numbered_items(list_value)
+
+    if not ranking_items:
+        opis = row_data_with_bg.get('Opis', "") or ""
+        fallback_items = [
+            _strip_leading_numbering(item)
+            for item in re.findall(r'(\d+\.\s.*)', opis)
+        ]
+        ranking_items = [item for item in fallback_items if item]
+
+    ranking_items = ranking_items[:3]
+    if not ranking_items:
+        print("Nie znaleziono listy numerowanej w kolumnie 'Lista kart' ani w opisie dla rankingu. Generowanie standardowe.")
+        generate_content_cards(row_data_with_bg, index)
+        return
+
     graphics_urls = [
         u.strip() for u in (row_data_with_bg.get('Grafika') or "").split(';') if u.strip()
     ]
 
-    list_items = re.findall(r'(\d+\.\s.*)', opis)
-    if not list_items:
-        print("Nie znaleziono listy numerowanej w opisie dla rankingu. Generowanie standardowe.")
-        generate_content_cards(row_data_with_bg, index)
-        return
-
-    total_pages = 1 + len(list_items)
+    total_pages = 1 + len(ranking_items)
     generate_title_card(row_data_with_bg, index, total_pages)
 
     font_rank = ImageFont.truetype(HEADER_FONT_PATH, 150)
@@ -850,7 +945,7 @@ def generate_ranking_cards(row_data, index):
     font_highlight = ImageFont.truetype(HIGHLIGHT_FONT_PATH, 54)
     highlight_color = (255, 223, 100)
 
-    for i, item_text in enumerate(list_items):
+    for i, item_text in enumerate(ranking_items):
         card_img_url = graphics_urls[i].strip() if i < len(graphics_urls) else None
         card_img_source = None
         card_is_transparent = False
@@ -879,7 +974,7 @@ def generate_ranking_cards(row_data, index):
                 int(CONTENT_PANEL_IMAGE_MAX_HEIGHT * 1.25),
             ), Image.Resampling.LANCZOS)
 
-        clean_text = re.sub(r'^\d+\.\s*', '', item_text).strip()
+        clean_text = _strip_leading_numbering(item_text)
         rank_text = str(i + 1)
         rank_height = font_rank.getbbox("A")[3]
         image_block_height = card_img.height + CONTENT_PANEL_IMAGE_TEXT_GAP if card_img else 0
