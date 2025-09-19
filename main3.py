@@ -35,6 +35,12 @@ CATEGORY_STYLES = {
     "Domyślny": {"colors": [(200, 200, 200), (230, 230, 230)], "emoji": "ℹ️"}
 }
 
+_CATEGORY_KEY_VARIANTS = ("Kategoria", "kategoria")
+_DESCRIPTION_KEY_VARIANTS = ("Opis", "opis")
+_SOURCE_KEY_VARIANTS = ("Źródło", "Zrodlo", "źródło", "zrodlo")
+_BACKGROUND_KEY_VARIANTS = ("Tło", "Tlo", "tło", "tlo")
+_GRAPHICS_KEY_VARIANTS = ("Grafika", "Grafiki", "grafika", "grafiki")
+
 HIGHLIGHT_PROPER_NAMES = [
     "Lost Origin",
     "151 ETB",
@@ -590,7 +596,12 @@ def apply_modern_layout(img, row_data, transparent_background=False):
     if transparent_background:
         return content_bounds
 
-    styl = CATEGORY_STYLES.get(row_data.get("Kategoria", ""), CATEGORY_STYLES["Domyślny"])
+    category_value = _get_row_value_with_variants(
+        row_data,
+        _CATEGORY_KEY_VARIANTS,
+        "Domyślny",
+    )
+    styl = CATEGORY_STYLES.get(category_value, CATEGORY_STYLES["Domyślny"])
     c1, c2 = styl["colors"]
 
     # Miękki cień
@@ -674,25 +685,56 @@ def _normalize_url_value(value):
     return str(value).strip()
 
 
+def _get_graphics_entries(row_data):
+    if not row_data:
+        return []
+
+    raw_value = _get_row_value_with_variants(
+        row_data,
+        _GRAPHICS_KEY_VARIANTS,
+        "",
+    )
+
+    entries = []
+
+    def add_candidate(candidate):
+        normalized = _normalize_url_value(candidate)
+        if normalized:
+            entries.append(normalized)
+
+    if isinstance(raw_value, str):
+        normalized_value = raw_value.replace("\r\n", "\n").replace("\r", "\n")
+        for part in re.split(r"[;\n]+", normalized_value):
+            add_candidate(part)
+    elif isinstance(raw_value, (list, tuple, set)):
+        for item in raw_value:
+            add_candidate(item)
+    else:
+        add_candidate(raw_value)
+
+    return entries
+
+
 def _resolve_background_source(row_data):
     if not row_data:
         return ""
 
-    for key in ("Tło", "_background_url"):
-        candidate = _normalize_url_value(row_data.get(key))
-        if candidate:
-            return candidate
+    background_candidate = _get_row_value_with_variants(
+        row_data,
+        _BACKGROUND_KEY_VARIANTS,
+        "",
+    )
+    normalized_background = _normalize_url_value(background_candidate)
+    if normalized_background:
+        return normalized_background
 
-    grafika_value = row_data.get("Grafika")
-    if isinstance(grafika_value, str):
-        for part in grafika_value.split(';'):
-            candidate = _normalize_url_value(part)
-            if candidate:
-                return candidate
-    else:
-        candidate = _normalize_url_value(grafika_value)
-        if candidate:
-            return candidate
+    normalized_fallback = _normalize_url_value(row_data.get("_background_url"))
+    if normalized_fallback:
+        return normalized_fallback
+
+    for graphic_source in _get_graphics_entries(row_data):
+        if graphic_source:
+            return graphic_source
 
     return ""
 
@@ -711,7 +753,11 @@ def _prepare_row_with_background(row_data):
 def create_base_image(row_data):
     # Priorytet źródła tła: "Tło" > `_background_url` > pierwszy wpis z "Grafika".
     image_source = _resolve_background_source(row_data)
-    kategoria = row_data.get('Kategoria', 'Domyślny')
+    kategoria = _get_row_value_with_variants(
+        row_data,
+        _CATEGORY_KEY_VARIANTS,
+        "Domyślny",
+    )
     styl = CATEGORY_STYLES.get(kategoria, CATEGORY_STYLES['Domyślny'])
     base_image = fetch_image_from_url(image_source)
     is_transparent_background = _is_transparent_png(base_image, image_source) if base_image else False
@@ -751,7 +797,11 @@ def add_common_elements(img, row_data, page_num, total_pages):
     draw = ImageDraw.Draw(img)
     font_footer = ImageFont.truetype(FONT_PATH, 28)
     font_number = ImageFont.truetype(FONT_PATH, 26)
-    source_text = row_data.get('Źródło', '')
+    source_text = _get_row_value_with_variants(
+        row_data,
+        _SOURCE_KEY_VARIANTS,
+        "",
+    )
 
     if source_text:
         draw.text((PADDING, HEIGHT - 120), "Źródło:", font=font_footer, fill=(180, 180, 180))
@@ -990,19 +1040,21 @@ def generate_content_cards(row_data, index):
     """Generuje standardowe plansze z treścią.
 
     Kolumna "Tło" określa grafikę tła planszy. Kolumna "Grafika" może
-    zawierać wiele adresów URL oddzielonych średnikiem – każdy z nich
+    zawierać wiele adresów URL oddzielonych średnikiem lub nową linią – każdy z nich
     traktowany jest jako grafika karty przypisywana kolejno do stron
     z treścią.
     """
 
     row_data_with_bg, _ = _prepare_row_with_background(row_data)
 
-    graphics_entries = [
-        part.strip() for part in (row_data_with_bg.get("Grafika") or "").split(';') if part.strip()
-    ]
+    graphics_entries = _get_graphics_entries(row_data_with_bg)
     card_image_urls = graphics_entries
 
-    opis = row_data_with_bg.get('Opis', "")
+    opis = _get_row_value_with_variants(
+        row_data_with_bg,
+        _DESCRIPTION_KEY_VARIANTS,
+        "",
+    )
     font_text = ImageFont.truetype(FONT_PATH, 42)
     highlight_font = ImageFont.truetype(HIGHLIGHT_FONT_PATH, 44)
     highlight_color = (255, 223, 100)
@@ -1143,7 +1195,8 @@ def generate_ranking_cards(row_data, index):
 
     Tło planszy pobierane jest z kolumny "Tło" (z obsługą wartości
     zastępczych jak w `generate_content_cards`). Wszystkie adresy z
-    kolumny "Grafika" traktowane są jako kolejne grafiki kart.
+    kolumn "Grafika"/"Grafiki" traktowane są jako kolejne grafiki kart,
+    niezależnie od tego, czy rozdzielono je średnikami, czy nowymi liniami.
     """
 
     row_data_with_bg, _ = _prepare_row_with_background(row_data)
@@ -1156,7 +1209,11 @@ def generate_ranking_cards(row_data, index):
     ranking_items = _extract_numbered_items(list_value)
 
     if not ranking_items:
-        opis = row_data_with_bg.get('Opis', "") or ""
+        opis = _get_row_value_with_variants(
+            row_data_with_bg,
+            _DESCRIPTION_KEY_VARIANTS,
+            "",
+        )
         fallback_items = [
             _strip_leading_numbering(item)
             for item in re.findall(r'(\d+\.\s.*)', opis)
@@ -1212,9 +1269,7 @@ def generate_ranking_cards(row_data, index):
             "dates": card_dates,
         })
 
-    graphics_urls = [
-        u.strip() for u in (row_data_with_bg.get('Grafika') or "").split(';') if u.strip()
-    ]
+    graphics_urls = _get_graphics_entries(row_data_with_bg)
 
     total_pages = 1 + len(ranking_items)
     generate_title_card(row_data_with_bg, index, total_pages)
@@ -1227,7 +1282,7 @@ def generate_ranking_cards(row_data, index):
     highlight_color = (255, 223, 100)
 
     for i, item_text in enumerate(ranking_items):
-        card_img_url = graphics_urls[i].strip() if i < len(graphics_urls) else None
+        card_img_url = graphics_urls[i] if i < len(graphics_urls) else None
         card_img_source = None
         card_is_transparent = False
         if card_img_url:
@@ -1360,7 +1415,13 @@ def main():
                 }
                 title_for_log = _get_row_title(row, "")
                 print(f"\n--- Przetwarzanie artykułu #{i}: {title_for_log} ---")
-                if row.get('Kategoria') == 'Trendy cen':
+                category_value = _get_row_value_with_variants(
+                    row,
+                    _CATEGORY_KEY_VARIANTS,
+                    "",
+                )
+                normalized_category = str(category_value or "").strip().lower()
+                if normalized_category == 'trendy cen':
                     generate_ranking_cards(row, i)
                 else:
                     generate_content_cards(row, i)
