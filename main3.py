@@ -1037,110 +1037,151 @@ def get_text_block_height(draw, text_block, font, highlight_font, usable_width):
 
 
 def generate_content_cards(row_data, index):
-    """Generuje standardowe plansze z treścią.
+    """Generuje plansze treści w stałej sekwencji.
 
-    Kolumna "Tło" określa grafikę tła planszy. Kolumna "Grafika" może
-    zawierać wiele adresów URL oddzielonych średnikiem lub nową linią – każdy z nich
-    traktowany jest jako grafika karty przypisywana kolejno do stron
-    z treścią.
+    Kolejność slajdów:
+        1. Strona tytułowa
+        2. Plansza z opisem (wyśrodkowany tekst)
+        3. Jedna plansza na kartę z listy "Lista kart" wraz z ceną i grafiką
+        4. Plansza końcowa prezentująca źródło i baner
     """
 
     row_data_with_bg, _ = _prepare_row_with_background(row_data)
 
-    graphics_entries = _get_graphics_entries(row_data_with_bg)
-    card_image_urls = graphics_entries
-
-    opis = _get_row_value_with_variants(
+    opis_raw = _get_row_value_with_variants(
         row_data_with_bg,
         _DESCRIPTION_KEY_VARIANTS,
         "",
     )
-    font_text = ImageFont.truetype(FONT_PATH, 42)
+    opis_normalized = str(opis_raw or "").replace("\\r\\n", "\\n").replace("\\r", "\\n").strip()
+    if not opis_normalized:
+        opis_normalized = "Brak opisu."
+    opis_normalized = re.sub(r"\\n{3,}", "\\n\\n", opis_normalized)
+
+    list_value = _get_row_value_with_variants(
+        row_data_with_bg,
+        ("Lista kart", "Lista Kart", "Lista_kart", "ListaKart"),
+        "",
+    )
+    card_entries = _extract_numbered_items(list_value)
+    if not card_entries and list_value:
+        normalized_list = str(list_value).replace("\\r\\n", "\\n").replace("\\r", "\\n")
+        card_entries = [
+            entry.strip()
+            for entry in re.split(r"[\\n;]+", normalized_list)
+            if entry.strip()
+        ]
+    card_entries = [_strip_leading_numbering(entry) for entry in card_entries]
+
+    price_value_raw = _get_row_value_with_variants(
+        row_data_with_bg,
+        ("Ceny w PLN", "CenywPLN", "CenyPLN", "CenywPln", "Ceny wPLN", "Ceny"),
+        "",
+    )
+    price_entries = _extract_numbered_items(price_value_raw)
+    if not price_entries and price_value_raw:
+        normalized_prices = str(price_value_raw).replace("\\r\\n", "\\n").replace("\\r", "\\n")
+        price_entries = [
+            entry.strip()
+            for entry in re.split(r"[\\n;]+", normalized_prices)
+            if entry.strip()
+        ]
+    price_entries = [_strip_leading_numbering(entry) for entry in price_entries]
+
+    graphics_entries = _get_graphics_entries(row_data_with_bg)
+
+    card_slides_data = []
+    for idx, card_text in enumerate(card_entries):
+        clean_title = card_text.strip()
+        if not clean_title:
+            continue
+        card_slides_data.append({
+            "title": clean_title,
+            "price": price_entries[idx].strip() if idx < len(price_entries) else "",
+            "graphic": graphics_entries[idx] if idx < len(graphics_entries) else None,
+        })
+
+    font_body = ImageFont.truetype(FONT_PATH, 42)
     highlight_font = ImageFont.truetype(HIGHLIGHT_FONT_PATH, 44)
     highlight_color = (255, 223, 100)
+    font_price_label = ImageFont.truetype(FONT_PATH, 36)
+    font_price_value = ImageFont.truetype(HEADER_FONT_PATH, 76)
+    font_source_label = ImageFont.truetype(HEADER_FONT_PATH, 72)
+    font_source_body = ImageFont.truetype(FONT_PATH, 44)
 
-    _, content_bounds_preview = _calculate_panel_bounds()
-    content_left_preview, content_top_preview, content_right_preview, content_bottom_preview = content_bounds_preview
-    content_width_preview = max(content_right_preview - content_left_preview, 1)
-    available_space_preview = max(content_bottom_preview - content_top_preview, 1)
-    image_max_width = max(1, content_width_preview - 2 * CONTENT_PANEL_IMAGE_INSET)
+    measurement_draw = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
+    price_label_text = "CENA"
+    price_block_padding_x = 48
+    price_block_padding_y = 32
+    price_block_gap = 14
 
-    opis_formatted = re.sub(r'(\s)(?=\d+\.)', '\n', opis)
-    text_blocks = [block.strip() for block in opis_formatted.split('\n') if block.strip()]
+    def compute_price_metrics(price_text):
+        if not price_text:
+            return None
+        label_bbox = measurement_draw.textbbox((0, 0), price_label_text, font=font_price_label)
+        value_bbox = measurement_draw.textbbox((0, 0), price_text, font=font_price_value)
+        label_width = label_bbox[2] - label_bbox[0]
+        label_height = label_bbox[3] - label_bbox[1]
+        value_width = value_bbox[2] - value_bbox[0]
+        value_height = value_bbox[3] - value_bbox[1]
+        block_width = max(label_width, value_width) + price_block_padding_x * 2
+        block_height = label_height + value_height + price_block_gap + price_block_padding_y * 2
+        return {
+            "label_width": label_width,
+            "label_height": label_height,
+            "value_width": value_width,
+            "value_height": value_height,
+            "block_width": block_width,
+            "block_height": block_height,
+        }
 
-    temp_draw = ImageDraw.Draw(Image.new('RGBA', (1, 1)))
+    card_graphics = []
+    for slide_data in card_slides_data:
+        graphic_url = slide_data.get("graphic")
+        card_img = None
+        is_transparent = False
+        if graphic_url:
+            card_img = fetch_image_from_url(graphic_url)
+            if card_img:
+                is_transparent = _is_transparent_png(card_img, graphic_url)
+        card_graphics.append({"image": card_img, "is_transparent": is_transparent})
 
-    card_images = []
-    for url in card_image_urls:
-        card_img = fetch_image_from_url(url)
-        is_transparent_card = False
-        if card_img:
-            is_transparent_card = _is_transparent_png(card_img, url)
-            card_img.thumbnail((image_max_width, CONTENT_PANEL_IMAGE_MAX_HEIGHT), Image.Resampling.LANCZOS)
-        card_images.append({
-            "image": card_img,
-            "is_transparent": is_transparent_card,
-        })
-
-    def card_at(idx):
-        return card_images[idx] if 0 <= idx < len(card_images) else None
-
-    def get_image_block_height(card_image):
-        return card_image.height + CONTENT_PANEL_IMAGE_TEXT_GAP if card_image else 0
-
-    pages = []
-    current_blocks = []
-    current_text_height = 0
-    card_pointer = 0
-    current_card_entry = card_at(card_pointer)
-    current_card_image = current_card_entry["image"] if current_card_entry else None
-    current_image_block_height = get_image_block_height(current_card_image)
-
-    for block in text_blocks:
-        block_height = get_text_block_height(temp_draw, block, font_text, highlight_font, content_width_preview)
-        projected_height = current_image_block_height + current_text_height + block_height
-        if current_blocks and projected_height > available_space_preview:
-            pages.append({
-                "text": "\n".join(current_blocks),
-                "card": current_card_entry,
-            })
-            card_pointer += 1
-            current_card_entry = card_at(card_pointer)
-            current_card_image = current_card_entry["image"] if current_card_entry else None
-            current_image_block_height = get_image_block_height(current_card_image)
-            current_blocks = []
-            current_text_height = 0
-
-        current_blocks.append(block)
-        current_text_height += block_height
-
-    if current_blocks or current_card_entry:
-        pages.append({
-            "text": "\n".join(current_blocks),
-            "card": current_card_entry,
-        })
-        card_pointer += 1
-
-    while card_pointer < len(card_images):
-        pages.append({
-            "text": "",
-            "card": card_at(card_pointer),
-        })
-        card_pointer += 1
-
-    if not pages:
-        pages.append({
-            "text": "",
-            "card": None,
-        })
-
-    total_pages = 1 + len(pages)
+    card_slide_count = len(card_slides_data)
+    total_pages = 1 + 1 + card_slide_count + 1
     generate_title_card(row_data_with_bg, index, total_pages)
 
-    for p, page_data in enumerate(pages):
-        card_entry = page_data.get("card")
-        card_img_source = card_entry["image"] if card_entry else None
-        card_is_transparent = card_entry["is_transparent"] if card_entry else False
+    current_page = 2
+
+    opis_img, opis_transparent = create_base_image(row_data_with_bg)
+    opis_bounds = apply_modern_layout(opis_img, row_data_with_bg, transparent_background=opis_transparent)
+    opis_left, opis_top, opis_right, opis_bottom = opis_bounds
+    opis_width = max(opis_right - opis_left, 1)
+    opis_space = max(opis_bottom - opis_top, 1)
+    opis_draw = ImageDraw.Draw(opis_img)
+    opis_height = get_text_block_height(opis_draw, opis_normalized, font_body, highlight_font, opis_width)
+    opis_y = opis_top + max(0, (opis_space - opis_height) / 2)
+    draw_rich_text(
+        opis_draw,
+        int(round(opis_y)),
+        opis_normalized,
+        font_body,
+        highlight_font,
+        highlight_color,
+        opis_left,
+        opis_width,
+    )
+    opis_img = add_common_elements(opis_img, row_data_with_bg, current_page, total_pages)
+    opis_filename = f"{OUTPUT_DIR}/infografika_{index}_{current_page:02d}_opis.png"
+    opis_img.save(opis_filename)
+    print(f"Zapisano planszę opisu: {opis_filename}")
+    current_page += 1
+
+    for idx, slide_data in enumerate(card_slides_data):
+        card_text = slide_data.get("title", "")
+        price_text = slide_data.get("price", "")
+        graphic_entry = card_graphics[idx] if idx < len(card_graphics) else {"image": None, "is_transparent": False}
+        card_img_source = graphic_entry.get("image")
+        card_is_transparent = graphic_entry.get("is_transparent", False)
 
         img, background_transparent = create_base_image(row_data_with_bg)
         content_bounds = apply_modern_layout(
@@ -1151,44 +1192,164 @@ def generate_content_cards(row_data, index):
         content_left, content_top, content_right, content_bottom = content_bounds
         content_width = max(content_right - content_left, 1)
         available_space = max(content_bottom - content_top, 1)
-
         draw = ImageDraw.Draw(img)
 
-        text_chunk = page_data["text"]
         card_img = None
+        card_image_height = 0
         if card_img_source:
             card_img = card_img_source.copy()
-            card_img.thumbnail((max(1, content_width - 2 * CONTENT_PANEL_IMAGE_INSET), CONTENT_PANEL_IMAGE_MAX_HEIGHT), Image.Resampling.LANCZOS)
+            max_image_width = max(1, content_width - 2 * CONTENT_PANEL_IMAGE_INSET)
+            card_img.thumbnail((max_image_width, CONTENT_PANEL_IMAGE_MAX_HEIGHT), Image.Resampling.LANCZOS)
+            card_image_height = card_img.height
 
-        image_block_height = get_image_block_height(card_img)
-        text_height = get_text_block_height(draw, text_chunk, font_text, highlight_font, content_width) if text_chunk else 0
-        content_height = image_block_height + text_height
-
-        y_pos = content_top + max(0, (available_space - content_height) / 2)
+        clean_text = card_text.strip()
+        price_text_clean = price_text.strip()
+        price_metrics = compute_price_metrics(price_text_clean) if price_text_clean else None
+        text_height = get_text_block_height(draw, clean_text, font_body, highlight_font, content_width) if clean_text else 0
+        image_gap = CONTENT_PANEL_IMAGE_TEXT_GAP if card_img and (price_metrics or clean_text) else 0
+        after_price_gap = PRICE_BLOCK_TO_TEXT_GAP if price_metrics and clean_text else 0
+        price_block_height = price_metrics["block_height"] if price_metrics else 0
+        total_height = card_image_height + image_gap + price_block_height + after_price_gap + text_height
+        y_pos = content_top + max(0, (available_space - total_height) / 2)
 
         if card_img:
             img_x = content_left + (content_width - card_img.width) // 2
-            img.paste(card_img, (img_x, int(round(y_pos))), card_img)
-            y_pos += card_img.height + CONTENT_PANEL_IMAGE_TEXT_GAP
+            img.paste(card_img, (int(round(img_x)), int(round(y_pos))), card_img)
+            y_pos += card_img.height
+            if price_metrics or clean_text:
+                y_pos += CONTENT_PANEL_IMAGE_TEXT_GAP
 
-        if text_chunk:
+        if price_metrics:
+            block_width = price_metrics["block_width"]
+            block_height = price_metrics["block_height"]
+            block_x = content_left + (content_width - block_width) / 2
+            block_y = y_pos
+            block_rect = (
+                int(round(block_x)),
+                int(round(block_y)),
+                int(round(block_x + block_width)),
+                int(round(block_y + block_height)),
+            )
+            draw.rounded_rectangle(
+                block_rect,
+                radius=42,
+                fill=(15, 15, 24, 220),
+                outline=(highlight_color[0], highlight_color[1], highlight_color[2], 170),
+                width=3,
+            )
+            label_x = block_rect[0] + (block_width - price_metrics["label_width"]) / 2
+            label_y = block_rect[1] + price_block_padding_y
+            draw.text(
+                (int(round(label_x)), int(round(label_y))),
+                price_label_text,
+                font=font_price_label,
+                fill=(210, 210, 210),
+            )
+            value_x = block_rect[0] + (block_width - price_metrics["value_width"]) / 2
+            value_y = label_y + price_metrics["label_height"] + price_block_gap
+            draw_text_with_shadow(
+                draw,
+                (int(round(value_x)), int(round(value_y))),
+                price_text_clean,
+                font_price_value,
+                "white",
+                shadow_offset=(4, 4),
+            )
+            y_pos += block_height
+            if clean_text:
+                y_pos += PRICE_BLOCK_TO_TEXT_GAP
+
+        if clean_text:
             draw_rich_text(
                 draw,
                 int(round(y_pos)),
-                text_chunk,
-                font_text,
+                clean_text,
+                font_body,
                 highlight_font,
                 highlight_color,
                 content_left,
                 content_width,
             )
 
-        img = add_common_elements(img, row_data_with_bg, p + 2, total_pages)
-
-        filename = f"{OUTPUT_DIR}/infografika_{index}_{p+2:02d}_tresc.png"
+        img = add_common_elements(img, row_data_with_bg, current_page, total_pages)
+        filename = f"{OUTPUT_DIR}/infografika_{index}_{current_page:02d}_karta_{idx+1:02d}.png"
         img.save(filename)
-        print(f"Zapisano planszę z treścią: {filename}")
+        print(f"Zapisano planszę karty #{idx + 1}: {filename}")
+        current_page += 1
 
+    source_value = _get_row_value_with_variants(
+        row_data_with_bg,
+        _SOURCE_KEY_VARIANTS,
+        "",
+    )
+    normalized_source = _normalize_url_value(source_value)
+    if not normalized_source:
+        normalized_source = "Brak danych o źródle."
+
+    final_img, final_transparent = create_base_image(row_data_with_bg)
+    final_bounds = apply_modern_layout(final_img, row_data_with_bg, transparent_background=final_transparent)
+    final_left, final_top, final_right, final_bottom = final_bounds
+    final_width = max(final_right - final_left, 1)
+    final_space = max(final_bottom - final_top, 1)
+    final_draw = ImageDraw.Draw(final_img)
+
+    banner_display = None
+    if os.path.exists(BANNER_PATH):
+        try:
+            banner_display = Image.open(BANNER_PATH).convert("RGBA")
+            banner_display.thumbnail(
+                (max(1, final_width - 2 * CONTENT_PANEL_IMAGE_INSET), 360),
+                Image.Resampling.LANCZOS,
+            )
+        except Exception as exc:
+            print(f"Błąd podczas ładowania banera {BANNER_PATH}: {exc}")
+            banner_display = None
+
+    label_text = "Źródło"
+    label_bbox = final_draw.textbbox((0, 0), label_text, font=font_source_label)
+    label_width = label_bbox[2] - label_bbox[0]
+    label_height = label_bbox[3] - label_bbox[1]
+    source_text_height = get_text_block_height(final_draw, normalized_source, font_source_body, highlight_font, final_width)
+
+    gap_after_banner = 40 if banner_display and (label_height or source_text_height) else 0
+    gap_after_label = 24 if label_height and source_text_height else 0
+    banner_height = banner_display.height if banner_display else 0
+    total_height = banner_height + gap_after_banner + label_height + gap_after_label + source_text_height
+    y_pos = final_top + max(0, (final_space - total_height) / 2)
+
+    if banner_display:
+        banner_x = final_left + (final_width - banner_display.width) // 2
+        final_img.paste(banner_display, (int(round(banner_x)), int(round(y_pos))), banner_display)
+        y_pos += banner_height + gap_after_banner
+
+    if label_height:
+        label_x = final_left + (final_width - label_width) / 2
+        draw_text_with_shadow(
+            final_draw,
+            (int(round(label_x)), int(round(y_pos))),
+            label_text,
+            font_source_label,
+            "white",
+            shadow_offset=(6, 6),
+        )
+        y_pos += label_height + gap_after_label
+
+    if source_text_height:
+        draw_rich_text(
+            final_draw,
+            int(round(y_pos)),
+            normalized_source,
+            font_source_body,
+            highlight_font,
+            highlight_color,
+            final_left,
+            final_width,
+        )
+
+    final_img = add_common_elements(final_img, row_data_with_bg, current_page, total_pages)
+    final_filename = f"{OUTPUT_DIR}/infografika_{index}_{current_page:02d}_zrodlo.png"
+    final_img.save(final_filename)
+    print(f"Zapisano planszę źródłową: {final_filename}")
 # --- NOWOŚĆ: Funkcja do generowania plansz dla rankingu ---
 def generate_ranking_cards(row_data, index):
     """Generuje specjalne plansze dla kategorii 'Trendy cen'.
