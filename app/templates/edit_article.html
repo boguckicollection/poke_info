@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+
+{% block title %}Edytuj Artykuł - {{ article.title }}{% endblock %}
+
+{% block content %}
+    <h1>Edytuj Artykuł</h1>
+    <h2><a href="{{ article.url }}" target="_blank">{{ article.title }}</a></h2>
+
+    <div id="status-message" class="status-message" style="display:none;"></div>
+
+    <form method="post">
+        <div class="form-group">
+            <label for="title">Tytuł posta</label>
+            <input type="text" id="title" name="title" class="form-control" value="{{ article.title }}">
+        </div>
+
+        <div class="form-group">
+            <label for="summary">Podsumowanie (treść posta)</label>
+            <textarea id="summary" name="summary" class="form-control" rows="10">{{ article.summary or '' }}</textarea>
+        </div>
+        
+        <div class="form-group">
+            <label for="content">Pełna treść artykułu (do wglądu)</label>
+            <button type="button" id="fetch-content" data-article-id="{{ article.id }}">Pobierz pełną treść</button>
+            <div id="full-content" class="content-preview">{{ article.content or 'Kliknij przycisk, aby pobrać treść...' }}</div>
+        </div>
+
+        <div class="form-group">
+            <label>Obrazki do infografiki</label>
+            <button type="button" id="fetch-images" data-article-id="{{ article.id }}">Pobierz obrazki z artykułu</button>
+            <div id="image-selection-container" class="image-selection-container">
+                {# Images will be loaded here by JavaScript #}
+            </div>
+            <input type="hidden" id="selected_images" name="selected_images" value="{{ article.selected_images or '' }}">
+        </div>
+
+        <div class="form-group">
+            <label for="image_keywords">Słowa kluczowe dla kart Pokémon (oddzielone przecinkami)</label>
+            <input type="text" id="image_keywords" name="image_keywords" class="form-control" value="{{ article.image_keywords or '' }}">
+            <small>Używane do wyszukiwania kart, nie do tła.</small>
+        </div>
+        
+        <div class="form-group">
+            <label for="status">Status</label>
+            <select id="status" name="status" class="form-control">
+                <option value="new" {% if article.status == 'new' %}selected{% endif %}>Nowy</option>
+                <option value="ready" {% if article.status == 'ready' %}selected{% endif %}>Gotowy do generowania</option>
+                <option value="generated" {% if article.status == 'generated' %}selected{% endif %}>Wygenerowany</option>
+            </select>
+        </div>
+
+        <button type="submit" class="btn">Zapisz zmiany</button>
+    </form>
+
+{% endblock %}

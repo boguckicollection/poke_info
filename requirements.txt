@@ -1,0 +1,14 @@
+Flask
+Flask-SQLAlchemy
+Flask-Migrate
+python-dotenv
+feedparser
+pandas
+requests
+beautifulsoup4
+Pillow
+matplotlib
+selenium
+webdriver-manager
+pokemontcgsdk
+openai
